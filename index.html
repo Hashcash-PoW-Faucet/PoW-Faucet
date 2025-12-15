@@ -1,0 +1,1068 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="styles.css">
+  <title>Hashcash PoW Faucet</title>
+</head>
+<body>
+  <h1>
+    <img src="AB.png" alt="Pixel portrait of Adam Back" class="ab-avatar">
+    Hashcash PoW Faucet
+  </h1>
+
+<div id="info-section">
+  <p>
+    Create an anonymous address and claim credit points by completing
+    <a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style anti-spam Proof-of-Work tasks.
+    Credits can be sent to other accounts without fees.
+  </p>
+  <p>
+    This tech demo also includes a simple redemption mechanism whereby burning credit points may result in small tips in one of the following supported cryptocurrencies:
+  </p>
+  <div id="supported-coins">
+    <p>Loading supported coins…</p>
+  </div>
+  <p class="about-link"><a href="#about">Tell me more!</a></p>
+</div>
+
+  <div id="signup-section">
+    <button id="btn-signup">Signup (PoW)</button>
+    <div id="account-info"></div>
+  </div>
+
+  <hr>
+
+  <div id="earn-section">
+  <button id="btn-earn">Earn 1 credit (PoW)</button>
+    <div style="margin-top:6px;">
+      <label>
+        <input type="checkbox" id="auto-mine-checkbox">
+        Auto-mine until daily cap (pauses during cooldown)
+      </label>
+    </div>
+  </div>
+
+  <div id="status-panel">
+    <div id="status"></div>
+    <div id="credits"></div>
+    <div id="hashrate"></div>
+    <div id="cooldown-countdown"></div>
+  </div>
+
+  <hr>
+
+  <div id="account-section">
+    <h2>Account management</h2>
+    <p><strong>Warning:</strong> Your private key controls all your credits. Keep it safe and back it up.</p>
+    <div id="address-info"></div>
+    <label for="import-account">Import private key:</label>
+    <input id="import-account" type="text" size="60" placeholder="Paste your private key here">
+    <button id="btn-import">Use private key</button>
+    <button id="btn-export">Export private key</button>
+    <button id="btn-export-file">Download key file</button>
+    <button id="btn-clear">Clear local private key</button>
+    <div id="account-status" class="section-status" style="margin-top:10px;"></div>
+  </div>
+
+  <hr>
+
+  <div id="send-section">
+    <h2>Send credits</h2>
+    <p>Send credits to another address.</p>
+    <label for="send-to-address">Recipient address:</label>
+    <input id="send-to-address" type="text" size="60" placeholder="Paste recipient address here">
+    <p></p>
+    <label for="send-amount">Amount:</label>
+    <input id="send-amount" type="number" min="1" step="1" value="1">
+    <button id="btn-send">Send credits</button>
+    <div id="send-status" class="section-status" style="margin-top:10px;"></div>
+  </div>
+
+  <div id="redeem-section">
+    <h2>Redeem / tips (experimental)</h2>
+    <p>
+      Disclaimer: Credits in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
+    </p>
+    <p>
+      To request a redeem, you must own at least
+      <span id="min-redeem-credits">20</span> credits. Depending on the coin, each redeem request permanently
+      burns a fixed number of credits (e.g. 10) from your balance, even if no tip is sent.
+    </p>
+    <p>
+      Any crypto tip is purely discretionary, may be small, irregular or skipped entirely,
+      and can be changed or discontinued at any time. There is no guaranteed probability,
+      minimum or maximum payout and no right or expectation of any payment.
+    </p>
+    <label for="redeem-address">Tip address:</label>
+    <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
+    <label for="redeem-currency">Currency:</label>
+    <select id="redeem-currency">
+      <option value="LCC">LCC</option>
+      <option value="GRS">GRS</option>
+      <option value="SLM">SLM</option>
+      <option value="VECO">VECO</option>
+    </select>
+    <button id="btn-redeem">Request redeem</button>
+    <div id="redeem-status" class="section-status" style="margin-top:10px;"></div>
+
+    <h3 style="margin-top: 18px;">Redeem log</h3>
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+      <small style="opacity:0.8;">Shows the last 10 redeem requests from the server audit queue (public faucet log).</small>
+      <button id="btn-clear-redeem-log" type="button" style="margin-left:auto;">Refresh</button>
+    </div>
+    <div id="redeem-log" style="
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(0,0,0,0.25);
+      max-height: 180px;
+      overflow: auto;
+    ">No redeems yet.</div>
+  </div>
+
+  <!-- SHA256 library -->
+  <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js"></script>
+
+  <script>
+    const BASE_URL = "http://127.0.0.1:8000"; // backend FastAPI URL
+
+    let faucetConfig = null; // will be filled from /config
+    let autoMineEnabled = false;
+    let autoMineRunning = false;
+    let lastAccountData = null; // last /me payload
+
+    // Redeem log (server-backed, parsed from redeem_queue.jsonl)
+    // This is meant to be a public faucet-style log.
+    async function refreshRedeemLog() {
+      const el = document.getElementById("redeem-log");
+      if (!el) return;
+
+      try {
+        // Public/global log
+        let res = await fetch(`${BASE_URL}/redeem_log?limit=10&all=true`, { method: "GET" });
+
+        // Fallback: if public logs are disabled server-side, try per-account when we have a key.
+        if (!res.ok && accountId) {
+          res = await fetch(`${BASE_URL}/redeem_log?limit=10`, {
+            method: "GET",
+            headers: { "Authorization": "Bearer " + accountId }
+          });
+        }
+
+        if (!res.ok) {
+          let msg;
+          try {
+            const errData = await res.json();
+            msg = errData.detail || JSON.stringify(errData);
+          } catch (e) {
+            msg = await res.text();
+          }
+          el.textContent = "Redeem log unavailable: " + msg;
+          return;
+        }
+
+        const entries = await res.json();
+        renderRedeemLog(entries);
+      } catch (e) {
+        console.error(e);
+        el.textContent = "Redeem log error: " + e;
+      }
+    }
+
+    function formatUnixTs(ts) {
+      if (!ts || !Number.isFinite(ts)) return "-";
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    function shortenAccountId(s) {
+      if (!s) return "-";
+      const str = String(s);
+      if (str.length <= 16) return str;
+      return str.slice(0, 10) + "…" + str.slice(-6);
+    }
+
+    function renderRedeemLog(entries) {
+      const el = document.getElementById("redeem-log");
+      if (!el) return;
+
+      if (!entries || entries.length === 0) {
+        el.textContent = "No redeems yet.";
+        return;
+      }
+
+      // Newest first
+      const lines = entries
+        .slice()
+        .reverse()
+        .map((e) => {
+          const req = e.request_id ?? e.id ?? "-";
+          const ts = formatUnixTs(e.ts ?? e.created_at);
+          const acc = shortenAccountId(e.account_id ?? "-");
+          const cur = e.currency ?? "-";
+          const amt = (e.tip_amount === 0 || e.tip_amount) ? String(e.tip_amount) : "-";
+          const tx = e.txid ?? "-";
+          return `request_id=${req}\nts=${ts}\naccount_id=${acc}\ncurrency=${cur}\ntip_amount=${amt}\ntxid=${tx}\n---`;
+        });
+
+      el.textContent = lines.join("\n");
+    }
+
+    async function loadConfig() {
+      try {
+        const res = await fetch(`${BASE_URL}/config`);
+        if (!res.ok) {
+          console.error("Failed to load config:", await res.text());
+          return;
+        }
+        const cfg = await res.json();
+        faucetConfig = cfg;
+
+        // If present, update minimum redeem credits text in the redeem section
+        const minRedeemEl = document.getElementById("min-redeem-credits");
+        if (minRedeemEl && typeof cfg.min_redeem_credits === "number") {
+          minRedeemEl.textContent = String(cfg.min_redeem_credits);
+        }
+
+        // If the backend exposes supported currencies, populate the redeem dropdown dynamically.
+        const redeemCurrencySel = document.getElementById("redeem-currency");
+        if (redeemCurrencySel && Array.isArray(cfg.supported_currencies) && cfg.supported_currencies.length > 0) {
+          // Clear existing options and rebuild from config
+          redeemCurrencySel.innerHTML = "";
+          cfg.supported_currencies.forEach((sym) => {
+            const opt = document.createElement("option");
+            opt.value = sym;
+            opt.textContent = sym;
+            redeemCurrencySel.appendChild(opt);
+          });
+        }
+
+        // Populate the info-section list of supported coins from cfg.coins (if present)
+        const coinsContainer = document.getElementById("supported-coins");
+        if (coinsContainer && cfg.coins && typeof cfg.coins === "object") {
+          const symbols = Object.keys(cfg.coins);
+          if (symbols.length > 0) {
+            coinsContainer.innerHTML = "";
+            symbols.sort().forEach((sym) => {
+              const c = cfg.coins[sym] || {};
+              const name = c.name || sym;
+              const short = c.short || sym;
+              const homepage = c.homepage || "";
+              const p = document.createElement("p");
+              if (homepage) {
+                const a = document.createElement("a");
+                a.href = homepage;
+                a.target = "_blank";
+                a.rel = "noopener noreferrer";
+                a.textContent = `${name} (${short})`;
+                p.appendChild(a);
+              } else {
+                p.textContent = `${name} (${short})`;
+              }
+              coinsContainer.appendChild(p);
+            });
+          } else {
+            coinsContainer.textContent = "No external coins configured.";
+          }
+        }
+      } catch (err) {
+        console.error("Error loading config:", err);
+      }
+    }
+
+    // Web Worker for PoW (keeps the UI responsive)
+    const powWorkerScript = `
+      self.importScripts('https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js');
+
+      function leadingZeroBits(bytes) {
+        let bits = 0;
+        for (let i = 0; i < bytes.length; i++) {
+          const b = bytes[i];
+          if (b === 0) {
+            bits += 8;
+          } else {
+            for (let j = 7; j >= 0; j--) {
+              if (((b >> j) & 1) === 0) {
+                bits += 1;
+              } else {
+                return bits;
+              }
+            }
+            return bits;
+          }
+        }
+        return bits;
+      }
+
+      self.onmessage = function (e) {
+        const { message, bits } = e.data;
+        let nonce = 0;
+        const t0 = Date.now();
+        let lastReport = t0;
+
+        while (true) {
+          const input = message + "|" + nonce;
+          const digest = sha256.array(input);
+          if (leadingZeroBits(digest) >= bits) {
+            const dt = (Date.now() - t0) / 1000;
+            const rate = nonce > 0 && dt > 0 ? nonce / dt : 0;
+            self.postMessage({ nonce: String(nonce), time: dt, rate, done: true });
+            break;
+          }
+
+          nonce++;
+
+          // Periodic progress updates (about every 500 ms)
+          if (nonce % 50000 === 0) {
+            const now = Date.now();
+            if (now - lastReport >= 500) {
+              const dt = (now - t0) / 1000;
+              const rate = nonce > 0 && dt > 0 ? nonce / dt : 0;
+              self.postMessage({ nonce: String(nonce), time: dt, rate, done: false });
+              lastReport = now;
+            }
+          }
+        }
+      };
+    `;
+    const powWorkerBlob = new Blob([powWorkerScript], { type: 'application/javascript' });
+    const powWorkerUrl = URL.createObjectURL(powWorkerBlob);
+    let powWorker = new Worker(powWorkerUrl);
+
+    // Keep a short history of hashrate samples (for ~3s moving average)
+    let hashrateSamples = [];
+
+    function addHashrateSample(rate) {
+      const now = performance.now() / 1000; // seconds
+      hashrateSamples.push({ t: now, r: rate });
+      const cutoff = now - 3.0;
+      hashrateSamples = hashrateSamples.filter(s => s.t >= cutoff);
+      if (hashrateSamples.length === 0) {
+        setHashrate(null);
+        return;
+      }
+      const sum = hashrateSamples.reduce((acc, s) => acc + s.r, 0);
+      const avg = sum / hashrateSamples.length;
+      setHashrate(avg);
+    }
+
+    function solvePow(message, bits) {
+      return new Promise((resolve, reject) => {
+        const handler = (event) => {
+          const { nonce, time, rate, done } = event.data;
+          if (rate && isFinite(rate)) {
+            addHashrateSample(rate);
+          }
+          if (done) {
+            powWorker.removeEventListener('message', handler);
+            resolve(String(nonce));
+          }
+        };
+        powWorker.addEventListener('message', handler);
+        powWorker.postMessage({ message, bits });
+      });
+    }
+
+    let accountId = localStorage.getItem("account_id") || null;
+    let currentAddress = null;     // derived address from the backend
+    let serverTimeOffset = 0;     // server_time - local_time (seconds)
+    let lastCooldownUntil = 0;    // unix timestamp from backend
+
+    function leadingZeroBits(bytes) {
+      let bits = 0;
+      for (let i = 0; i < bytes.length; i++) {
+        const b = bytes[i];
+        if (b === 0) {
+          bits += 8;
+        } else {
+          for (let j = 7; j >= 0; j--) {
+            if (((b >> j) & 1) === 0) {
+              bits += 1;
+            } else {
+              return bits;
+            }
+          }
+          return bits;
+        }
+      }
+      return bits;
+    }
+
+    function b64urlRandom(len = 18) {
+      const arr = new Uint8Array(len);
+      crypto.getRandomValues(arr);
+      let s = btoa(String.fromCharCode(...arr));
+      // base64url encoding
+      return s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function setSectionStatus(elementId, msg) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      el.textContent = msg;
+    }
+
+    // Earn/claim status (kept in the top status panel)
+    function setStatus(msg) {
+      setSectionStatus("status", msg);
+      console.log(msg);
+    }
+
+    // Section-specific status fields
+    function setAccountStatus(msg) {
+      setSectionStatus("account-status", msg);
+      console.log(msg);
+    }
+
+    function setSendStatus(msg) {
+      setSectionStatus("send-status", msg);
+      console.log(msg);
+    }
+
+    function setRedeemStatus(msg) {
+      setSectionStatus("redeem-status", msg);
+      console.log(msg);
+    }
+
+    function setAccountInfo() {
+      const el = document.getElementById("account-info");
+      if (accountId) {
+        el.textContent = "Private key is stored in this browser.";
+      } else {
+        el.textContent = "No private key loaded.";
+      }
+    }
+
+    function setCredits(msg) {
+      document.getElementById("credits").textContent = msg;
+    }
+
+    function setHashrate(hashesPerSecond) {
+      const el = document.getElementById("hashrate");
+      if (!el) return;
+      if (!hashesPerSecond || !isFinite(hashesPerSecond)) {
+        el.textContent = "⛏️ Miner idle";
+        return;
+      }
+      const khs = hashesPerSecond / 1000;
+      el.textContent = "⛏️ Hashrate: " +
+        khs.toLocaleString(undefined, { maximumFractionDigits: 1 }) +
+        " kH/s";
+    }
+
+    // Helper to copy address to clipboard and show status
+    async function copyAddressToClipboard(addr) {
+      if (!addr) {
+        setAccountStatus("No address to copy.");
+        return;
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(addr);
+        } else {
+          // Fallback for older browsers
+          const ta = document.createElement("textarea");
+          ta.value = addr;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        setAccountStatus("Address copied to clipboard.");
+      } catch (err) {
+        console.error(err);
+        setAccountStatus("Failed to copy address: " + err);
+      }
+    }
+
+    // Visual feedback for successful PoW (retro flash on the status panel)
+    function triggerPowSuccess() {
+      const panel = document.getElementById("status-panel");
+      if (!panel) return;
+      // Remove and re-add the class to restart the animation if it was already active
+      panel.classList.remove("pow-success");
+      // Force reflow so the animation can restart
+      void panel.offsetWidth;
+      panel.classList.add("pow-success");
+    }
+
+    function updateVisibility() {
+      const signupSection = document.getElementById("signup-section");
+      const earnSection = document.getElementById("earn-section");
+      const accountSection = document.getElementById("account-section");
+      const sendSection = document.getElementById("send-section");
+      const redeemSection = document.getElementById("redeem-section");
+
+      // Account management (including private key import) should always be visible
+      if (accountSection) accountSection.style.display = "";
+
+        if (accountId) {
+        if (signupSection) signupSection.style.display = "none";
+        if (earnSection) earnSection.style.display = "";
+        if (sendSection) sendSection.style.display = "";
+        if (redeemSection) redeemSection.style.display = "";
+      } else {
+        if (signupSection) signupSection.style.display = "";
+        if (earnSection) earnSection.style.display = "none";
+        if (sendSection) sendSection.style.display = "none";
+        if (redeemSection) redeemSection.style.display = "none";
+      }
+    }
+
+    function updateCooldownCountdown() {
+      const el = document.getElementById("cooldown-countdown");
+      if (!el) return;
+
+      if (!accountId || !lastCooldownUntil) {
+        el.textContent = "";
+        return;
+      }
+
+      const nowLocal = Math.floor(Date.now() / 1000);
+      const serverNow = nowLocal + serverTimeOffset;
+      let remaining = lastCooldownUntil - serverNow;
+
+      if (remaining <= 0) {
+        el.textContent = "Cooldown: ready";
+        return;
+      }
+
+      const minutes = Math.floor(remaining / 60);
+      const seconds = remaining % 60;
+      el.textContent = `Cooldown remaining: ${minutes}m ${seconds}s`;
+    }
+
+    // Update countdown once per second
+    setInterval(updateCooldownCountdown, 1000);
+
+
+
+    async function checkSignupStatus() {
+      const res = await fetch(`${BASE_URL}/signup_status`);
+      const st = await res.json();
+      if (!st.allowed) {
+        setStatus(`Signup not allowed from this IP: ${st.detail} (remaining today: 0)`);
+        return false;
+      }
+      return true;
+    }
+
+    async function signup() {
+      if (accountId) {
+        setStatus("Account already exists, skipping signup.");
+        return;
+      }
+
+      const ok = await checkSignupStatus();
+      if (!ok) {
+        return; // don't start PoW
+      }
+
+      const bits = faucetConfig && typeof faucetConfig.signup_bits === "number"
+        ? faucetConfig.signup_bits
+        : 24; // safe fallback if config not loaded
+
+      setStatus(`Running signup PoW (bits=${bits})... This can take a few minutes or even hours but needs to be done only once. Note: only a limited number of accounts can be created per IP address; if the limit is already reached, signup will fail with "signup cap per ip" even after PoW.`);
+
+      const ts = Math.floor(Date.now() / 1000);
+      const clientNonce = b64urlRandom(18);
+      const rounded = Math.floor(ts / 60) * 60;
+      const msg = `signup|ts=${rounded}|cn=${clientNonce}`;
+
+      const powNonce = await solvePow(msg, bits);
+
+      const payload = {
+        client_nonce: clientNonce,
+        pow_nonce: powNonce,
+        ts: ts
+      };
+
+      const res = await fetch(`${BASE_URL}/signup_pow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        setStatus("Signup failed: " + text);
+        return;
+      }
+
+      const data = await res.json();
+      accountId = data.account_id;
+      localStorage.setItem("account_id", accountId);
+      updateVisibility();
+      setAccountInfo();
+      const importInput = document.getElementById("import-account");
+      if (importInput) {
+        importInput.value = accountId;
+      }
+      setStatus("Signup ok. A new private key has been created. Please back it up using 'Export private key'.");
+      triggerPowSuccess();
+      await refreshAccount();
+      refreshRedeemLog();
+    }
+
+    async function earnCredit() {
+      if (!accountId) {
+        setStatus("No account – please run signup or import an account.");
+        return;
+      }
+      setStatus("Requesting challenge...");
+
+      const resCh = await fetch(`${BASE_URL}/challenge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + accountId
+        },
+        body: JSON.stringify({ action: "earn_credit" })
+      });
+
+      if (!resCh.ok) {
+        const text = await resCh.text();
+        setStatus("Challenge failed: " + text);
+        return;
+      }
+
+      const ch = await resCh.json();
+      const stamp = ch.stamp;
+      const bits = ch.bits;
+      const sig = ch.sig;
+
+      setStatus(`Running claim PoW (bits=${bits})...`);
+      const nonce = await solvePow(stamp, bits);
+
+      const resSub = await fetch(`${BASE_URL}/submit_pow`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + accountId
+        },
+        body: JSON.stringify({ stamp, sig, nonce })
+      });
+
+      if (!resSub.ok) {
+        const text = await resSub.text();
+        setStatus("Submit failed: " + text);
+        return;
+      }
+
+      const data = await resSub.json();
+      setStatus("Claim ok. Cooldown updated.");
+      triggerPowSuccess();
+      await refreshAccount();
+      refreshRedeemLog();
+    }
+
+    async function autoMineLoop() {
+      if (autoMineRunning) return;
+      autoMineRunning = true;
+      setStatus("Auto-mine started. The miner will run until the daily cap is reached, pausing during cooldown.");
+      try {
+        while (autoMineEnabled && accountId) {
+
+          await refreshAccount();
+          if (!lastAccountData) {
+            setStatus("Auto-mine stopped: unable to load account info.");
+            break;
+          }
+
+          const earned = lastAccountData.earned_today ?? 0;
+          const cap = lastAccountData.daily_earn_cap ?? 0;
+
+          if (cap && earned >= cap) {
+            setStatus(`Auto-mine: daily cap reached (${earned}/${cap}).`);
+            break;
+          }
+
+          const nowLocal = Math.floor(Date.now() / 1000);
+          const serverNow = nowLocal + serverTimeOffset;
+          const cdUntil = lastAccountData.cooldown_until || 0;
+
+          if (cdUntil > serverNow) {
+            let waitMs = (cdUntil - serverNow) * 1000 + 500;
+            setStatus(`Auto-mine waiting for cooldown (${cdUntil - serverNow}s)...`);
+
+            const step = 1000;
+            while (waitMs > 0 && autoMineEnabled && accountId) {
+              const chunk = Math.min(step, waitMs);
+              await new Promise((resolve) => setTimeout(resolve, chunk));
+              waitMs -= chunk;
+            }
+            if (!autoMineEnabled || !accountId) {
+              setStatus("Auto-mine stopped.");
+              break;
+            }
+          }
+          await earnCredit();
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      } catch (err) {
+        console.error("Auto-mine loop error:", err);
+        setStatus("Auto-mine stopped due to an error: " + err);
+      } finally {
+        autoMineRunning = false;
+      }
+    }
+
+    async function refreshAccount() {
+      if (!accountId) {
+        setAccountInfo();
+        setCredits("");
+        lastCooldownUntil = 0;
+        updateCooldownCountdown();
+        updateVisibility();
+        return;
+      }
+      try {
+        const res = await fetch(`${BASE_URL}/me`, {
+          method: "GET",
+          headers: {
+            "Authorization": "Bearer " + accountId
+          }
+        });
+        if (!res.ok) {
+          lastAccountData = null;
+          const text = await res.text();
+          if (res.status === 401) {
+            // Stored private key does not correspond to a valid account on the server.
+            accountId = null;
+            localStorage.removeItem("account_id");
+            currentAddress = null;
+            lastCooldownUntil = 0;
+            setAccountInfo();
+            updateCooldownCountdown();
+            setAccountStatus("Stored private key is invalid or account no longer exists. Please signup again or import a valid key.");
+            updateVisibility();
+          } else {
+            setStatus("Failed to load account info: " + text);
+          }
+          return;
+        }
+        const data = await res.json();
+        lastAccountData = data;
+        setAccountInfo();
+
+        const addrEl = document.getElementById("address-info");
+        if (addrEl) {
+          addrEl.innerHTML = `
+          Address: <span id="address-text">${data.account_id}</span>
+          <button id="btn-copy-address" type="button" class="icon-button"
+                  title="Copy address to clipboard">📋</button>
+        `;
+        const copyBtn = document.getElementById("btn-copy-address");
+        if (copyBtn) {
+          copyBtn.addEventListener("click", () => {
+            copyAddressToClipboard(data.account_id);
+          });
+          }
+        }
+        currentAddress = data.account_id;
+
+        const nowLocal = Math.floor(Date.now() / 1000);
+        serverTimeOffset = data.server_time - nowLocal;
+        lastCooldownUntil = data.cooldown_until;
+
+        setCredits(
+          `Credits: ${data.credits}, earned today: ${data.earned_today}/${data.daily_earn_cap}`
+        );
+        updateCooldownCountdown();
+        updateVisibility();
+      } catch (err) {
+        console.error(err);
+        setStatus("Error loading account info: " + err);
+      }
+    }
+
+    document.getElementById("btn-signup").addEventListener("click", () => {
+      signup().catch(err => {
+        console.error(err);
+        setStatus("Error: " + err);
+      });
+    });
+
+    document.getElementById("btn-earn").addEventListener("click", () => {
+      earnCredit().catch(err => {
+        console.error(err);
+        setStatus("Error: " + err);
+      });
+    });
+
+    const autoMineCheckbox = document.getElementById("auto-mine-checkbox");
+    if (autoMineCheckbox) {
+      autoMineCheckbox.addEventListener("change", (ev) => {
+        autoMineEnabled = ev.target.checked;
+        if (autoMineEnabled) {
+          if (!accountId) {
+            setStatus("No account – please signup or import an account before enabling auto-mine.");
+            autoMineCheckbox.checked = false;
+            autoMineEnabled = false;
+            return;
+          }
+          if (!autoMineRunning) {
+            autoMineLoop().catch((err) => {
+              console.error(err);
+              setStatus("Auto-mine error: " + err);
+            });
+          }
+        } else {
+          setStatus("Auto-mine stopped.");
+        }
+      });
+    }
+
+    document.getElementById("btn-import").addEventListener("click", () => {
+      const input = document.getElementById("import-account");
+      const value = (input.value || "").trim();
+      if (!value) {
+        setAccountStatus("Please enter a private key to import.");
+        return;
+      }
+      accountId = value;
+      localStorage.setItem("account_id", accountId);
+      updateVisibility();
+      setAccountStatus("Private key imported.");
+      refreshRedeemLog();
+      refreshAccount().catch(err => {
+        console.error(err);
+        setAccountStatus("Error while refreshing account: " + err);
+      });
+    });
+
+    document.getElementById("btn-export").addEventListener("click", () => {
+      if (!accountId) {
+        setAccountStatus("No private key in this browser to export.");
+        return;
+      }
+      const input = document.getElementById("import-account");
+      if (input) {
+        input.value = accountId;
+      }
+      setAccountStatus("Private key copied into the input field. Please back it up safely (e.g. password manager or paper).");
+    });
+
+    document.getElementById("btn-export-file").addEventListener("click", () => {
+      if (!accountId) {
+        setAccountStatus("No private key in this browser to export.");
+        return;
+      }
+      const data = {
+        private_key: accountId,
+        address: currentAddress || null
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = currentAddress
+        ? `pow_faucet_key_${currentAddress}.json`
+        : "pow_faucet_key.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setAccountStatus("Key file downloaded. Please store it safely (e.g. password manager, encrypted storage, or paper).");
+    });
+
+    document.getElementById("btn-clear").addEventListener("click", () => {
+      accountId = null;
+      localStorage.removeItem("account_id");
+      currentAddress = null;
+      lastCooldownUntil = 0;
+
+      const importInput = document.getElementById("import-account");
+      if (importInput) {
+        importInput.value = "";
+      }
+      const addrEl = document.getElementById("address-info");
+      if (addrEl) {
+        addrEl.textContent = "";
+      }
+
+      updateVisibility();
+      setAccountStatus("Local private key cleared from this browser.");
+      refreshRedeemLog();
+      refreshAccount().catch(err => {
+        console.error(err);
+        setAccountStatus("Error while refreshing account: " + err);
+      });
+    });
+
+    document.getElementById("btn-send").addEventListener("click", () => {
+      if (!accountId) {
+        setSendStatus("No private key loaded – please signup or import a private key before sending.");
+        return;
+      }
+
+      const toInput = document.getElementById("send-to-address");
+      const amtInput = document.getElementById("send-amount");
+      const toAddress = (toInput.value || "").trim();
+      const amount = parseInt(amtInput.value, 10);
+
+      if (!toAddress) {
+        setSendStatus("Please enter a recipient address.");
+        return;
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setSendStatus("Please enter a valid positive amount.");
+        return;
+      }
+
+      fetch(`${BASE_URL}/transfer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + accountId
+        },
+        body: JSON.stringify({ to_address: toAddress, amount: amount })
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const text = await res.text();
+            setSendStatus("Transfer failed: " + text);
+            return;
+          }
+          const data = await res.json();
+          setSendStatus("Transfer ok. Your new balance: " + data.from_credits + " credits.");
+          refreshAccount().catch(err => {
+            console.error(err);
+            setSendStatus("Error while refreshing account after transfer: " + err);
+          });
+        })
+        .catch(err => {
+          console.error(err);
+          setSendStatus("Error while sending transfer: " + err);
+        });
+    });
+
+    const redeemBtn = document.getElementById("btn-redeem");
+    if (redeemBtn) {
+      redeemBtn.addEventListener("click", () => {
+        if (!accountId) {
+          setRedeemStatus("No private key loaded – please signup or import a private key before requesting a redeem.");
+          return;
+        }
+
+        const addrInput = document.getElementById("redeem-address");
+        const currInput = document.getElementById("redeem-currency");
+        const tipAddress = (addrInput.value || "").trim();
+        const currency = (currInput.value || "").trim();
+
+        if (!tipAddress) {
+          setRedeemStatus("Please enter a tip address.");
+          return;
+        }
+
+        fetch(`${BASE_URL}/redeem_request`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + accountId
+          },
+          body: JSON.stringify({
+            tip_address: tipAddress,
+            currency: currency || null
+          })
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              let msg;
+              try {
+                const errData = await res.json();
+                msg = errData.detail || JSON.stringify(errData);
+              } catch (e) {
+                msg = await res.text();
+              }
+              setRedeemStatus("Redeem request failed: " + msg);
+              return;
+            }
+            const data = await res.json();
+
+            // Append to local redeem log (fields are expected from the backend audit enqueue)
+            // Falls back to currentAddress / client time if not present.
+            refreshRedeemLog();
+
+            let extra = "";
+            if ((data.tip_amount === 0 || data.tip_amount) && data.txid && data.currency) {
+              extra = ` Tip sent: ${data.tip_amount} ${data.currency}, txid: ${data.txid}.`;
+            }
+
+            setRedeemStatus(
+              data.message +
+              extra +
+              " Credits left: " + data.credits_left +
+              ". Minimum required: " + data.min_credits + "."
+            );
+
+            refreshAccount().catch(err => {
+              console.error(err);
+              setRedeemStatus("Error while refreshing account after redeem request: " + err);
+            });
+          })
+          .catch(err => {
+            console.error(err);
+            setRedeemStatus("Error while sending redeem request: " + err);
+          });
+      });
+    }
+
+    // Redeem log clear button
+    // Redeem log refresh button
+    const clearRedeemLogBtn = document.getElementById("btn-clear-redeem-log");
+    if (clearRedeemLogBtn) {
+      clearRedeemLogBtn.addEventListener("click", () => {
+        refreshRedeemLog();
+        setRedeemStatus("Redeem log refreshed.");
+      });
+    }
+
+    // Initial UI state
+    updateVisibility();
+    refreshRedeemLog();
+
+    // Load server config (signup_bits, min_redeem_credits, etc.) and then refresh account
+    loadConfig().then(() => {
+      refreshAccount();
+    }).catch(err => {
+      console.error("Error during initial config load:", err);
+      refreshAccount();
+    });
+  </script>
+  <hr>
+
+  <section id="about">
+    <h2>What is this?</h2>
+    <p>
+      This small project is a tribute to Hashcash and early cypherpunks and combines two ideas:
+    </p>
+    <ul>
+      <li>
+        <strong><a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style Proof of Work:</strong>
+        Every signup and claim requires solving a stateless PoW challenge, inspired by the original Hashcash anti-spam mechanism
+        proposed by Adam Back in 1997.
+      </li>
+      <li>
+        <strong>Crypto-inspired accounts:</strong>
+        Each user gets a "private key" after a PoW signup challenge that is stored in this browser
+        and used to authenticate with the server. The server tracks your credits using an address derived from
+        this private key, similar to a very simple wallet address, but never stores the key itself.
+      </li>
+      <li>
+        <strong>No registration or personal data:</strong>
+        You can create and use an account without email, username, or KYC. The server only sees anonymous
+        keys and derived addresses, and there is no traditional signup form.
+      </li>
+      <li>
+        <strong>Limited account creation per IP/day (demo rule):</strong>
+        For fairness and to limit abuse, this demo only allows a limited number of signups per IP address per day.
+      </li>
+    </ul>
+  </section>
+  </body>
+  </html>

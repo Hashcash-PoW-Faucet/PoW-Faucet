@@ -1,0 +1,233 @@
+/* Retro 1997-ish styles for HashCash PoW Faucet */
+
+/* Overall page */
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: #c0c0c0;        /* classic grey */
+  font-family: "Tahoma", "Microsoft Sans Serif", sans-serif;
+  color: #000000;
+}
+
+/* Centered content column: use normal block layout and center via max-width + auto margins */
+body {
+  display: block;
+}
+
+body > * {
+  box-sizing: border-box;
+}
+
+/* Main container look: like an old 800x600 page */
+body > :first-child {
+  margin-top: 20px;
+}
+
+body {
+  padding: 20px;
+}
+
+h1, h2 {
+  font-family: "Verdana", "Arial", sans-serif;
+}
+
+/* Wrap everything in a fake window */
+body {
+  background-color: #008080; /* teal backdrop vibe */
+}
+
+body > div,
+body > section,
+body > hr,
+body > script,
+body > h1 {
+  max-width: 800px;
+  width: 100%;
+}
+
+/* Fake "browser window" */
+h1 {
+  background-color: #000080;
+  color: #ffffff;
+  padding: 8px 10px;
+  margin: 20px auto 0;
+  border-width: 2px;
+  border-style: solid;
+  border-color: #ffffff #000000 #000000 #ffffff; /* 3D window border */
+  font-size: 20px;
+}
+
+/* Sections and panels */
+section,
+div {
+  background-color: #c0c0c0;
+  border-width: 2px;
+  border-style: solid;
+  border-color: #ffffff #404040 #404040 #ffffff; /* raised 3D frame */
+  padding: 10px;
+  margin: 8px auto;
+  max-width: 800px;
+}
+
+section ul {
+  padding-left: 20px;
+}
+
+/* Horizontal rule like old-school */
+hr {
+  max-width: 800px;
+  margin: 12px auto;
+  border: none;
+  border-top: 2px groove #808080;
+}
+
+/* Links */
+a {
+  color: #0000cc;
+  text-decoration: underline;
+}
+
+a:hover {
+  color: #ff0000;
+}
+
+/* Buttons */
+button {
+  background-color: #e0e0e0;
+  border: 2px outset #ffffff;
+  padding: 6px 14px;
+  margin: 6px 4px;
+  font-size: 13px;
+  min-width: 110px;
+  cursor: pointer;
+}
+
+button:active {
+  border-style: inset;
+}
+
+/* Inputs */
+input[type="text"],
+input[type="number"] {
+  border: 1px inset #808080;
+  padding: 2px 4px;
+  font-size: 12px;
+  background-color: #ffffff;
+  margin: 4px 2px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box; /* stay inside panel width */
+}
+
+/* Status / info blocks */
+#status {
+  margin-top: 6px;
+  padding: 4px;
+  background-color: #ffffe0; /* light yellow status area */
+  border: 1px solid #c0c000;
+  font-size: 12px;
+  min-height: 18px;
+}
+
+/* Per-section status messages (account/send/redeem) */
+.section-status {
+  margin-top: 6px;
+  padding: 4px;
+  background-color: #ffffe0; /* light yellow status area */
+  border: 1px solid #c0c000;
+  font-size: 12px;
+  min-height: 18px;          /* make visible even when empty */
+  box-sizing: border-box;
+}
+
+/* Override the generic panel look for small status boxes */
+.section-status {
+  border-style: solid;
+  border-width: 1px;
+}
+
+#credits,
+#hashrate,
+#cooldown-countdown,
+#account-info,
+#address-info {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+/* Small headings inside panels */
+h2 {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+/* Mini title-bar style for panel headings */
+section h2,
+div h2 {
+  background-color: #000080;
+  color: #ffffff;
+  margin: -10px -10px 8px -10px; /* extend to panel edges */
+  padding: 4px 6px;
+  font-size: 14px;
+  border-bottom: 1px solid #404040;
+}
+
+/* Labels inline, like old forms */
+label {
+  display: inline-block;
+  margin-top: 4px;
+  margin-right: 4px;
+  font-size: 12px;
+}
+
+/* Make the page not stretch too tall visually */
+body {
+  min-height: 100vh;
+}
+
+.ab-avatar {
+  width: 50px;
+  height: 50px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+body > p.about-link {
+  max-width: 800px;
+  width: 100%;
+  margin: 4px auto 12px auto;
+  text-align: right;
+}
+
+.about-link a {
+  font-size: 0.9rem;
+  text-decoration: underline;
+}
+
+/* Small icon-style button for clipboard (Windows 95-like) */
+.icon-button {
+  min-width: 24px;
+  padding: 2px 4px;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+}
+
+/* Retro flash effect for successful PoW */
+@keyframes pow-success-flash {
+  0% {
+    background-color: #c0c0c0;
+  }
+  30% {
+    background-color: #b0ffb0; /* light green flash */
+  }
+  100% {
+    background-color: #c0c0c0;
+  }
+}
+
+#status-panel.pow-success {
+  animation: pow-success-flash 0.6s ease-out;
+}
