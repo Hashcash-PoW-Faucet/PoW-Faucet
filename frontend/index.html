@@ -129,8 +129,8 @@
   <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js"></script>
 
   <script>
-    const BASE_URL = "http://127.0.0.1:8000"; // backend FastAPI URL
-
+    // const BASE_URL = "http://127.0.0.1:8000"; // backend FastAPI URL
+    const BASE_URL = "/api"; //production
     let faucetConfig = null; // will be filled from /config
     let autoMineEnabled = false;
     let autoMineRunning = false;
