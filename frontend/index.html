@@ -82,17 +82,9 @@
   <div id="redeem-section">
     <h2>Redeem / tips (experimental)</h2>
     <p>
-      Disclaimer: Credits in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
-    </p>
-    <p>
       To request a redeem, you must own at least
       <span id="min-redeem-credits">20</span> credits. Depending on the coin, each redeem request permanently
       burns a fixed number of credits (e.g. 10) from your balance, even if no tip is sent.
-    </p>
-    <p>
-      Any crypto tip is purely discretionary, may be small, irregular or skipped entirely,
-      and can be changed or discontinued at any time. There is no guaranteed probability,
-      minimum or maximum payout and no right or expectation of any payment.
     </p>
     <label for="redeem-address">Tip address:</label>
     <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
@@ -124,6 +116,44 @@
       overflow: auto;
     ">No redeems yet.</div>
   </div>
+
+    <section id="about">
+    <h2>What is this?</h2>
+    <p>
+      This small project is a tribute to Hashcash and early cypherpunks and combines two ideas:
+    </p>
+    <ul>
+      <li>
+        <strong><a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style Proof of Work:</strong>
+        Every signup and claim requires solving a stateless PoW challenge, inspired by the original Hashcash anti-spam mechanism
+        proposed by Adam Back in 1997.
+      </li>
+      <li>
+        <strong>Crypto-inspired accounts:</strong>
+        Each user gets a "private key" after a PoW signup challenge that is stored in this browser
+        and used to authenticate with the server. The server tracks your credits using an address derived from
+        this private key, similar to a very simple wallet address, but never stores the key itself.
+      </li>
+      <li>
+        <strong>No registration or personal data:</strong>
+        You can create and use an account without email, username, or KYC. The server only sees anonymous
+        keys and derived addresses, and there is no traditional signup form.
+      </li>
+      <li>
+        <strong>Limited account creation per IP/day (demo rule):</strong>
+        For fairness and to limit abuse, this demo only allows a limited number of signups per IP address per day.
+      </li>
+    </ul>
+  </section>
+   <section id="disclaimer">
+    <h2>Disclaimer</h2>
+   <p>
+      Disclaimer: Credits in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
+      Any crypto tip is purely discretionary, may be small, irregular or skipped entirely,
+      and can be changed or discontinued at any time. There is no guaranteed probability,
+      minimum or maximum payout and no right or expectation of any payment.
+    </p>
+  </section>
 
   <!-- SHA256 library -->
   <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js"></script>
@@ -1035,34 +1065,5 @@
     });
   </script>
   <hr>
-
-  <section id="about">
-    <h2>What is this?</h2>
-    <p>
-      This small project is a tribute to Hashcash and early cypherpunks and combines two ideas:
-    </p>
-    <ul>
-      <li>
-        <strong><a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style Proof of Work:</strong>
-        Every signup and claim requires solving a stateless PoW challenge, inspired by the original Hashcash anti-spam mechanism
-        proposed by Adam Back in 1997.
-      </li>
-      <li>
-        <strong>Crypto-inspired accounts:</strong>
-        Each user gets a "private key" after a PoW signup challenge that is stored in this browser
-        and used to authenticate with the server. The server tracks your credits using an address derived from
-        this private key, similar to a very simple wallet address, but never stores the key itself.
-      </li>
-      <li>
-        <strong>No registration or personal data:</strong>
-        You can create and use an account without email, username, or KYC. The server only sees anonymous
-        keys and derived addresses, and there is no traditional signup form.
-      </li>
-      <li>
-        <strong>Limited account creation per IP/day (demo rule):</strong>
-        For fairness and to limit abuse, this demo only allows a limited number of signups per IP address per day.
-      </li>
-    </ul>
-  </section>
   </body>
   </html>
