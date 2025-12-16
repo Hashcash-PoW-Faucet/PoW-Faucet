@@ -86,21 +86,29 @@ def tail_jsonl_lines(path: str, n: int) -> List[str]:
 # Path to a JSON config describing supported coins and their RPC / tip settings.
 # Example (coins.json):
 # {
-#   "SLM": {
-#     "rpc_url": "http://127.0.0.1:41683/",
-#     "rpc_user": "test",
-#     "rpc_password": "test",
-#     "address_validate_method": "validateaddress",
-#     "min_tip": "0",
-#     "max_tip": "1"
-#   },
-#   "VECO": {
-#     "rpc_url": "...",
-#     "rpc_user": "...",
-#     "rpc_password": "...",
-#     "address_validate_method": "validateaddress"
-#   }
-# }
+#  "BTC": {
+#    "name": "Bitcoin",
+#    "short": "BTC",
+#    "homepage": "https://bitcoin.org",
+#    "rpc_url": "http://192.168.178.1:8332/",
+#    "rpc_user": "BTC_user",
+#    "rpc_password": "BTC_pw",
+#    "address_validate_method": "validateaddress",
+#    "min_tip": "0",
+#    "max_tip": "0.000001"
+#  },
+#  "LTC": {
+#    "name": "Litecoin",
+#    "short": "LTC",
+#    "homepage": "https://vecocoin.com/",
+#    "rpc_url": "http://192.168.178.3:9332/",
+#    "rpc_user": "LTC_user",
+#    "rpc_password": "LTC_pw",
+#    "address_validate_method": "validateaddress",
+#    "min_tip": "0.00001",
+#    "max_tip": "0.0001"
+#  }
+#}
 COINS_CONFIG_PATH = os.getenv("COINS_CONFIG_PATH", "coins.json")
 # ---------------------------
 # Coin config, validation, and redeem queue helpers
