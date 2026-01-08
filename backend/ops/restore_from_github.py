@@ -5,7 +5,8 @@ Restores an encrypted+compressed SQLite database snapshot from a git repo.
 
 Assumptions / format (matches our backup script convention):
 - Snapshots are files within the repo (default: snapshots/) with one of these suffixes:
-    *.db.gz.enc, *.sqlite.gz.enc, *.gz.enc, *.enc
+    *.db.gz.gpg, *.gz.gpg, *.gpg (GPG symmetric)
+    *.db.gz.enc, *.sqlite.gz.enc, *.gz.enc, *.enc (OpenSSL enc)
 - The plaintext is a gzip-compressed SQLite DB.
 - Encryption uses OpenSSL 'enc' with AES-256-GCM, PBKDF2, SHA-256.
 
@@ -141,6 +142,14 @@ def require_openssl() -> str:
     return out.strip()
 
 
+def require_gpg() -> str:
+    code, out = run(["gpg", "--version"])
+    if code != 0:
+        raise SystemExit("gpg not found. Install gpg or ensure it is on PATH.")
+    # first line contains version
+    return out.splitlines()[0].strip() if out else "gpg"
+
+
 def openssl_decrypt_to_file(enc_path: Path, out_path: Path, passphrase: str) -> None:
     """Decrypts enc_path into out_path using OpenSSL enc AES-256-GCM PBKDF2 SHA-256."""
     # Note: using -pass pass:... (no env leakage via args is still visible in ps).
@@ -170,6 +179,46 @@ def openssl_decrypt_to_file(enc_path: Path, out_path: Path, passphrase: str) -> 
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     if p.returncode != 0:
         raise SystemExit(f"Decrypt failed: {p.stdout.strip()}")
+
+
+def gpg_decrypt_to_file(enc_path: Path, out_path: Path, passphrase: str) -> None:
+    """Decrypts enc_path into out_path using GPG symmetric decryption."""
+    # Use loopback pinentry so this can run non-interactively.
+    cmd = [
+        "gpg",
+        "--batch",
+        "--yes",
+        "--pinentry-mode",
+        "loopback",
+        "--passphrase-fd",
+        "0",
+        "-o",
+        str(out_path),
+        "-d",
+        str(enc_path),
+    ]
+
+    p = subprocess.run(
+        cmd,
+        input=(passphrase + "\n"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if p.returncode != 0:
+        raise SystemExit(f"GPG decrypt failed: {p.stdout.strip()}")
+
+
+def decrypt_snapshot_to_gz(snapshot_path: Path, out_gz_path: Path, passphrase: str) -> None:
+    """Decrypt snapshot (either .gpg or .enc) into a gzip file at out_gz_path."""
+    name = snapshot_path.name.lower()
+    if name.endswith(".gpg"):
+        gpg_decrypt_to_file(snapshot_path, out_gz_path, passphrase)
+        return
+    if name.endswith(".enc"):
+        openssl_decrypt_to_file(snapshot_path, out_gz_path, passphrase)
+        return
+    raise SystemExit(f"Unknown snapshot format (expected .gpg or .enc): {snapshot_path}")
 
 
 def gunzip_to_file(gz_path: Path, out_path: Path) -> None:
@@ -223,6 +272,10 @@ def build_restore_config(args: argparse.Namespace) -> RestoreConfig:
     snapshots_dir = expanduser_path(args.snapshots_dir) if args.snapshots_dir else (repo / "snapshots")
 
     globs = tuple(args.glob) if args.glob else (
+        "*.db.gz.gpg",
+        "*.sqlite.gz.gpg",
+        "*.gz.gpg",
+        "*.gpg",
         "*.db.gz.enc",
         "*.sqlite.gz.enc",
         "*.gz.enc",
@@ -251,7 +304,7 @@ def list_snapshots(files: List[Path]) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Restore encrypted+gzipped SQLite DB snapshot from git repo")
+    ap = argparse.ArgumentParser(description="Restore encrypted+gzipped SQLite DB snapshot (.gpg or .enc) from git repo")
     ap.add_argument("--env", default="backup.env", help="dotenv-style env file to load (default: ./backup.env)")
 
     ap.add_argument("--repo", default=os.environ.get("DB_BACKUP_REPO", "~/db-backup"), help="Local path to db-backup git repo")
@@ -278,7 +331,6 @@ def main() -> int:
 
     cfg = build_restore_config(args)
 
-    require_openssl()
     ensure_git_repo(cfg.repo)
 
     if cfg.git_pull:
@@ -298,6 +350,14 @@ def main() -> int:
     else:
         snap = pick_latest(files)
 
+    # Ensure required crypto tool is available for the selected snapshot.
+    if snap.name.lower().endswith(".gpg"):
+        require_gpg()
+    elif snap.name.lower().endswith(".enc"):
+        require_openssl()
+    else:
+        raise SystemExit(f"Unsupported snapshot type: {snap.name}")
+
     print(f"restore: snapshot={snap}")
     print(f"restore: target_db={cfg.out_db}")
 
@@ -307,7 +367,7 @@ def main() -> int:
         plain_db = td_path / "snapshot.db"
 
         print("restore: decrypting...")
-        openssl_decrypt_to_file(snap, dec_gz, cfg.passphrase)
+        decrypt_snapshot_to_gz(snap, dec_gz, cfg.passphrase)
 
         print("restore: gunzipping...")
         gunzip_to_file(dec_gz, plain_db)
