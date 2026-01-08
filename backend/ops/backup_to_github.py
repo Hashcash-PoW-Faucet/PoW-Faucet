@@ -212,6 +212,28 @@ def main() -> int:
         print("ERROR: BACKUP_PASSPHRASE env var is missing", file=sys.stderr)
         return 2
 
+    # 0) Sync repo first (before writing new snapshot files).
+    # A brand-new empty GitHub repo has no remote branch yet; in that case, skip pull.
+    rc, out = git(["pull", "--rebase"], repo_dir)
+    print(out)
+    if rc != 0:
+        out_l = out.lower()
+        if (
+            "no such ref was fetched" in out_l
+            or "couldn't find remote ref" in out_l
+            or "could not find remote ref" in out_l
+            or "remote ref does not exist" in out_l
+            or "does not appear to be a git repository" in out_l
+        ):
+            print(
+                "WARNING: git pull skipped (remote branch not found yet). "
+                "If this is a new repo, create an initial commit on GitHub (e.g. add a README) "
+                "or run `git push -u origin main` once in the repo.",
+                file=sys.stderr,
+            )
+        else:
+            print("ERROR: git pull failed", file=sys.stderr)
+            return 4
     ts = int(time.time())
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(ts))
 
@@ -284,11 +306,6 @@ def main() -> int:
                 pass
 
     # 8) Git commit + push
-    rc, out = git(["pull", "--rebase"], repo_dir)
-    print(out)
-    if rc != 0:
-        print("ERROR: git pull failed", file=sys.stderr)
-        return 4
 
     rc, out = git(["add", "manifest.json", "LATEST", "snapshots/"], repo_dir)
     print(out)
