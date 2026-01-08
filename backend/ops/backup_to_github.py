@@ -64,6 +64,23 @@ def sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
+def cleanup_snapshot_artifacts(base_db: Path, gz_path: Path) -> None:
+    """Remove plaintext snapshot artifacts (best effort)."""
+    candidates = [
+        base_db,
+        Path(str(base_db) + "-wal"),
+        Path(str(base_db) + "-shm"),
+        Path(str(base_db) + "-journal"),
+        gz_path,
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+
+
 def run_sqlite_checks(db_path: Path) -> Dict[str, Any]:
     # read-only connect (best effort); still works on normal file too
     uri = f"file:{db_path.as_posix()}?mode=ro"
@@ -107,6 +124,15 @@ def make_consistent_snapshot(src_db: Path, dst_db: Path) -> None:
         try:
             # Pages per step: tune to reduce blocking time
             src.backup(dst, pages=2000)
+            # Ensure the snapshot is self-contained and does not rely on WAL sidecars.
+            try:
+                dst.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except Exception:
+                pass
+            try:
+                dst.execute("PRAGMA journal_mode=DELETE;")
+            except Exception:
+                pass
             dst.commit()
         finally:
             dst.close()
@@ -271,15 +297,8 @@ def main() -> int:
     # 5) Encrypt
     gpg_encrypt_sym(snap_gz, snap_gpg, passphrase)
 
-    # cleanup plaintext artifacts
-    try:
-        snap_db.unlink()
-    except Exception:
-        pass
-    try:
-        snap_gz.unlink()
-    except Exception:
-        pass
+    # cleanup plaintext artifacts (including possible WAL/SHM sidecars)
+    cleanup_snapshot_artifacts(snap_db, snap_gz)
 
     # 6) Write manifest
     manifest = {
