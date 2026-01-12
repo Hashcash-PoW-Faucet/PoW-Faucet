@@ -84,15 +84,45 @@ def sat_from_amount(amount_coin: Any) -> int:
 
 
 def rpc_call(coin: Dict[str, Any], method: str, params: list) -> Any:
+    """Call a coin JSON-RPC endpoint.
+
+    Some forks return HTTP 500 even for standard JSON-RPC errors.
+    So we parse JSON first and surface the real RPC error message.
+    """
     url = str(coin["rpc_url"])
     user = str(coin["rpc_user"])
     pw = str(coin["rpc_password"])
     payload = {"jsonrpc": "1.0", "id": "dex_watcher", "method": method, "params": params}
+
     r = requests.post(url, json=payload, auth=HTTPBasicAuth(user, pw), timeout=15)
-    r.raise_for_status()
-    j = r.json()
-    if j.get("error"):
-        raise RuntimeError(j["error"])
+
+    # Try to parse JSON even if HTTP status is 500
+    try:
+        j = r.json()
+    except Exception:
+        # Not JSON -> fall back to HTTP error
+        try:
+            r.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"rpc http error: {e}; body={(r.text or '').strip()[:300]}")
+        raise RuntimeError(f"rpc non-json response; body={(r.text or '').strip()[:300]}")
+
+    # JSON-RPC error inside body
+    if isinstance(j, dict) and j.get("error"):
+        err = j.get("error")
+        if isinstance(err, dict):
+            code = err.get("code")
+            msg = err.get("message")
+            raise RuntimeError(f"rpc error {code}: {msg}")
+        raise RuntimeError(f"rpc error: {err}")
+
+    # HTTP error without structured RPC error
+    if r.status_code >= 400:
+        raise RuntimeError(f"rpc http {r.status_code}: {(r.text or '').strip()[:300]}")
+
+    if not isinstance(j, dict):
+        raise RuntimeError(f"rpc invalid json result type: {type(j)}")
+
     return j.get("result")
 
 
@@ -224,11 +254,24 @@ def ensure_import_address(coin: Dict[str, Any], address: str, label: str) -> Non
     try:
         rpc_call(coin, "importaddress", [address, label, False])
     except Exception as e:
-        # Many daemons error on "already have address" etc. We tolerate that.
-        msg = str(e)
-        if "already" in msg.lower():
+        msg = str(e).strip().lower()
+
+        # common "already imported / already in wallet" variants
+        if any(s in msg for s in (
+                "already",
+                "already have",
+                "already exists",
+                "already contains",
+                "is already",
+                "key already exists",
+                "the wallet already",
+        )):
             return
-        # Some forks return JSON error "Invalid address or key" etc -> let it fail hard
+
+        # If it's code -4 and mentions contain/exists, also treat as OK
+        if "rpc error -4" in msg and ("contain" in msg or "exist" in msg):
+            return
+
         raise
 
 
