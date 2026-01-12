@@ -5,6 +5,7 @@ backend/.client_pow_demo.py
 backend/faucet_old.db
 backend/faucet.db
 backend/redeem_queue.jsonl
+backend/ops/backup.env
 .idea/
 __pycache__/
 *.py[cod]
