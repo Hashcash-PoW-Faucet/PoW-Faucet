@@ -196,7 +196,7 @@ def main() -> int:
     ap.add_argument(
         "--db",
         default=os.environ.get("FAUCET_DB"),
-        help="Path to faucet.db (or set FAUCET_DB in backup.env)",
+        help="Path to faucet_old.db (or set FAUCET_DB in backup.env)",
     )
     ap.add_argument(
         "--repo",

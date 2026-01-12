@@ -18,15 +18,37 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from pow_utils import pow_ok
+# Local imports (support running as `app:app` and as `backend.app:app`)
+try:
+    from .pow_utils import pow_ok  # type: ignore
+except ImportError:
+    from pow_utils import pow_ok  # type: ignore
+
+from pathlib import Path
+try:
+    from .dex import create_dex_router, create_dex_admin_router  # type: ignore
+except ImportError:
+    from dex import create_dex_router, create_dex_admin_router  # type: ignore
 
 # Load environment variables from .env file
-load_dotenv()
+BACKEND_DIR = Path(__file__).resolve().parent
+load_dotenv(dotenv_path=BACKEND_DIR / ".env")
 
 # ---------------------------
 # Config
 # ---------------------------
-DB_PATH = os.getenv("FAUCET_DB", "faucet.db")
+# Always resolve paths relative to this backend/ directory, not the current working directory.
+# This prevents accidentally creating a new empty `faucet.db` in the project root when starting
+# uvicorn from a different CWD.
+BASE_DIR = Path(__file__).resolve().parent  # .../backend
+
+_env_db = (os.getenv("FAUCET_DB") or "").strip()
+if _env_db:
+    _p = Path(_env_db)
+    # If FAUCET_DB is a relative path (e.g. "faucet.db"), interpret it relative to backend/.
+    DB_PATH = str((BASE_DIR / _p).resolve()) if not _p.is_absolute() else str(_p)
+else:
+    DB_PATH = str((BASE_DIR / "faucet.db").resolve())
 
 STAMP_HMAC_KEY = os.getenv("STAMP_HMAC_KEY", "change-me-stamp-key").encode()
 IPTAG_HMAC_KEY = os.getenv("IPTAG_HMAC_KEY", "change-me-iptag-key").encode()
@@ -38,18 +60,30 @@ STAMP_TTL_SEC = int(os.getenv("STAMP_TTL_SEC", "3600"))   # stamp expiry
 COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))     # 15 min cooldown
 DAILY_EARN_CAP = int(os.getenv("DAILY_EARN_CAP", "20"))  # max credits/day
 MAX_SIGNUPS_PER_IP_PER_DAY = int(os.getenv("MAX_SIGNUPS_PER_IP_PER_DAY", "2"))  # max new accounts per IP tag per day
-
+DEX_ADMIN_TOKEN = os.getenv("DEX_ADMIN_TOKEN", "")
+DEX_MIN_CONFS = int(os.getenv("DEX_MIN_CONFS", "6"))
 #
 # Redeem / tip parameters
 MIN_REDEEM_CREDITS = int(os.getenv("MIN_REDEEM_CREDITS", "100"))      # minimum credits required to even request a redeem
 REDEEM_COST_CREDITS = int(os.getenv("REDEEM_COST_CREDITS", "100"))    # credits deducted per redeem attempt
 
 # File where redeem requests are queued for an external pay script (JSON lines)
-REDEEM_QUEUE_FILE = os.getenv("REDEEM_QUEUE_FILE", "redeem_queue.jsonl")
+REDEEM_QUEUE_FILE = os.getenv("REDEEM_QUEUE_FILE", str(BACKEND_DIR / "redeem_queue.jsonl"))
 
 # Whether /redeem_log may return entries for *all* accounts (privacy-sensitive).
 # Default: only return entries for the authenticated account.
 REDEEM_LOG_PUBLIC = os.getenv("REDEEM_LOG_PUBLIC", "0") == "1"
+
+# ---------------------------
+# Micro-DEX parameters
+# ---------------------------
+# TTLs are side-dependent:
+# - SELL_CREDITS: short window for the taker to pay on-chain
+# - BUY_CREDITS:  longer window because the maker might be offline
+DEX_TRADE_TTL_SELL_SEC = int(os.getenv("DEX_TRADE_TTL_SELL_SEC", "1200"))      # 20 min
+DEX_TRADE_TTL_BUY_SEC = int(os.getenv("DEX_TRADE_TTL_BUY_SEC", "172800"))      # 48 h
+DEX_ALLOWED_SIDES = {"SELL_CREDITS", "BUY_CREDITS"}  # BUY_CREDITS: escrow happens on taker side
+
 
 def tail_jsonl_lines(path: str, n: int) -> List[str]:
     """Return the last n lines of a text file (best-effort), without loading the whole file."""
@@ -109,10 +143,20 @@ def tail_jsonl_lines(path: str, n: int) -> List[str]:
 #    "max_tip": "0.0001"
 #  }
 #}
-COINS_CONFIG_PATH = os.getenv("COINS_CONFIG_PATH", "coins.json")
+
 # ---------------------------
 # Coin config, validation, and redeem queue helpers
 # ---------------------------
+# Keep your env default
+COINS_CONFIG_PATH = os.getenv("COINS_CONFIG_PATH", str(BASE_DIR / "coins.json"))
+
+# Resolve relative paths against the directory this file lives in (backend/)
+def _resolve_backend_path(p: str) -> Path:
+    path = Path(p)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
+
 def load_coins_config() -> dict:
     """
     Load coin configuration from COINS_CONFIG_PATH.
@@ -121,22 +165,25 @@ def load_coins_config() -> dict:
     to dicts containing at least rpc_url / rpc_user / rpc_password for coins
     that need RPC-based address validation.
     """
+    cfg_path = _resolve_backend_path(COINS_CONFIG_PATH)
+
     try:
-        with open(COINS_CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(cfg_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError("coins config must be a JSON object")
         return data
+
     except FileNotFoundError:
-        # Running without coin-specific RPC config is allowed; redeem requests will
-        # still be recorded, but no RPC-based address validation or tip bounds will apply.
-        print(f"[coins] config file '{COINS_CONFIG_PATH}' not found; running without coin-specific RPC config.")
+        print(f"[coins] config file '{cfg_path}' not found; running without coin-specific RPC config.")
         return {}
+
     except Exception as e:
-        print(f"[coins] failed to load config '{COINS_CONFIG_PATH}': {e}")
+        print(f"[coins] failed to load config '{cfg_path}': {e}")
         return {}
 
 COINS_CONFIG = load_coins_config()
+
 
 def call_coin_rpc(currency: str, method: str, params: Optional[list] = None):
     """
@@ -176,6 +223,7 @@ def call_coin_rpc(currency: str, method: str, params: Optional[list] = None):
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(f"{currency} RPC error: {data['error']}")
     return data.get("result")
+
 
 def is_valid_address(currency: str, addr: str) -> bool:
     """
@@ -447,6 +495,7 @@ def init_db():
       created_at INTEGER NOT NULL,
       next_seq INTEGER NOT NULL,
       credits INTEGER NOT NULL,
+      locked_credits INTEGER NOT NULL DEFAULT 0,
       cooldown_until INTEGER NOT NULL,
       earn_day TEXT NOT NULL,
       earned_today INTEGER NOT NULL
@@ -473,6 +522,44 @@ def init_db():
       note TEXT
     );
     """)
+
+    con.execute("""
+    CREATE TABLE IF NOT EXISTS dex_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      maker_account_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      credits_amount INTEGER NOT NULL,
+      price_sat_per_credit INTEGER NOT NULL,
+      pay_to_address TEXT NOT NULL,
+      status TEXT NOT NULL
+    );
+    """)
+
+    con.execute("""
+    CREATE TABLE IF NOT EXISTS dex_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      maker_account_id TEXT NOT NULL,
+      taker_account_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      credits_amount INTEGER NOT NULL,
+      pay_to_address TEXT NOT NULL,
+      expected_sats INTEGER NOT NULL,
+      txid TEXT,
+      confs INTEGER NOT NULL DEFAULT 0,
+      expires_at INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      settled_at INTEGER
+    );
+    """)
+
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dex_orders_open ON dex_orders(status, currency, side, price_sat_per_credit);")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dex_trades_state ON dex_trades(state, currency);")
+
     con.close()
 
 
@@ -513,8 +600,14 @@ def reset_daily_if_needed(con: sqlite3.Connection, account_id: str):
         WHERE account_id=? AND earn_day<>?
     """, (dk, account_id, dk))
 
-# Atomic accept of seq (prevents replay/races)
 
+def require_admin(req: Request) -> None:
+    token = (req.headers.get("x-admin-token") or "").strip()
+    if not DEX_ADMIN_TOKEN or token != DEX_ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="admin only")
+
+
+# Atomic accept of seq (prevents replay/races)
 
 def accept_pow_and_credit(con: sqlite3.Connection, account_id: str, expected_seq: int) -> bool:
     ts = now_unix()
@@ -896,6 +989,8 @@ def get_config():
             "name": cfg.get("name") or sym,
             "short": cfg.get("short") or sym,
             "homepage": cfg.get("homepage") or "",
+            "dex_min_confs": int(cfg.get("dex_min_confs") or cfg.get("min_confs") or DEX_MIN_CONFS),
+            "dex_enabled": bool(cfg.get("dex_enabled") or False),
         }
 
     return ConfigOut(
@@ -941,6 +1036,7 @@ def get_me(req: Request):
 # ---------------------------
 # /transfer endpoint: Move credits to another address
 # ---------------------------
+
 @app.post("/transfer", response_model=TransferOut)
 def transfer(data: TransferIn, req: Request):
     from_addr = auth_account(req)
@@ -965,6 +1061,7 @@ def transfer(data: TransferIn, req: Request):
             con.execute("ROLLBACK;")
             raise HTTPException(status_code=401, detail="unknown sender account")
         _, _, _, from_credits, _, _, _ = row_from
+        # Note: locked_credits are escrowed and are NOT part of `credits`; therefore they cannot be transferred.
 
         if from_credits < amount:
             con.execute("ROLLBACK;")
@@ -1007,6 +1104,210 @@ def transfer(data: TransferIn, req: Request):
         raise
     finally:
         con.close()
+
+
+def _supported_currency(sym: str) -> bool:
+    sym = (sym or "").strip().upper()
+    return bool(sym) and sym in COINS_CONFIG
+
+
+def _lock_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int) -> None:
+    """Move credits -> locked_credits atomically. Raises ValueError on failure."""
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    cur = con.execute(
+        """
+        UPDATE accounts
+        SET credits = credits - ?,
+            locked_credits = locked_credits + ?
+        WHERE account_id = ?
+          AND credits >= ?
+        """,
+        (amount, amount, account_id, amount),
+    )
+    if cur.rowcount != 1:
+        raise ValueError("insufficient credits or unknown account")
+
+
+
+def _unlock_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int) -> None:
+    """Move locked_credits -> credits atomically. Raises ValueError on failure."""
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    cur = con.execute(
+        """
+        UPDATE accounts
+        SET credits = credits + ?,
+            locked_credits = locked_credits - ?
+        WHERE account_id = ?
+          AND locked_credits >= ?
+        """,
+        (amount, amount, account_id, amount),
+    )
+    if cur.rowcount != 1:
+        raise ValueError("insufficient locked credits or unknown account")
+
+
+def _transfer_locked_credits_atomic(
+    con: sqlite3.Connection,
+    from_account_id: str,
+    to_account_id: str,
+    amount: int,
+) -> None:
+    """Move `amount` credits from `from_account_id.locked_credits` -> `to_account_id.credits`.
+
+    IMPORTANT:
+    - This function assumes the caller already started a DB transaction (e.g., BEGIN IMMEDIATE).
+    - It does not COMMIT/ROLLBACK by itself.
+    """
+    amount = int(amount)
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    # Deduct from source locked balance
+    cur = con.execute(
+        """
+        UPDATE accounts
+        SET locked_credits = locked_credits - ?
+        WHERE account_id = ? AND locked_credits >= ?
+        """,
+        (amount, str(from_account_id), amount),
+    )
+    if cur.rowcount != 1:
+        raise ValueError("insufficient locked balance or unknown source account")
+
+    # Credit recipient available balance
+    cur = con.execute(
+        """
+        UPDATE accounts
+        SET credits = credits + ?
+        WHERE account_id = ?
+        """,
+        (amount, str(to_account_id)),
+    )
+    if cur.rowcount != 1:
+        raise ValueError("recipient account not found")
+
+# ---------------------------
+# Micro-DEX: mount router
+# ---------------------------
+app.include_router(
+    create_dex_router(
+        db_func=db,
+        auth_func=auth_account,
+        now_unix_func=now_unix,
+        is_valid_address_func=is_valid_address,
+        supported_currency_func=_supported_currency,
+        trade_ttl_sell_sec=DEX_TRADE_TTL_SELL_SEC,
+        trade_ttl_buy_sec=DEX_TRADE_TTL_BUY_SEC,
+        allowed_sides=set(DEX_ALLOWED_SIDES),
+        lock_credits_atomic_func=_lock_credits_atomic,
+        unlock_credits_atomic_func=_unlock_credits_atomic,
+    ),
+    prefix="/dex",
+)
+
+app.include_router(
+    create_dex_admin_router(
+        db,
+        require_admin,
+        now_unix,
+        _transfer_locked_credits_atomic,
+    ),
+    prefix="/admin/dex",
+)
+
+
+def settle_trade_if_confirmed(con: sqlite3.Connection, trade_id: int) -> bool:
+    """Settle exactly once if trade is CONFIRMED.
+
+    Settlement rule:
+      maker.locked_credits -> taker.credits
+
+    Returns True if settled, False if not eligible.
+    """
+    con.execute("BEGIN IMMEDIATE;")
+    try:
+        row = con.execute(
+            """
+            SELECT state, side, maker_account_id, taker_account_id, credits_amount
+            FROM dex_trades
+            WHERE id=?
+            """,
+            (trade_id,),
+        ).fetchone()
+
+        if not row:
+            con.execute("ROLLBACK;")
+            raise ValueError("unknown trade")
+
+        state, side, maker, taker, amt = row
+        side = str(side).upper()
+        amt = int(amt)
+
+        if state != "CONFIRMED":
+            con.execute("ROLLBACK;")
+            return False
+
+        # Guard: flip state first to prevent double-settlement on retries/races.
+        cur = con.execute(
+            """
+            UPDATE dex_trades
+            SET state='SETTLED', settled_at=?
+            WHERE id=? AND state='CONFIRMED'
+            """,
+            (now_unix(), trade_id),
+        )
+        if cur.rowcount != 1:
+            con.execute("ROLLBACK;")
+            return False
+
+        # Side-aware settlement:
+        # - SELL_CREDITS: maker.locked_credits -> taker.credits
+        # - BUY_CREDITS:  taker.locked_credits -> maker.credits
+        if side == "SELL_CREDITS":
+            src = str(maker)
+            dst = str(taker)
+        elif side == "BUY_CREDITS":
+            src = str(taker)
+            dst = str(maker)
+        else:
+            con.execute("ROLLBACK;")
+            raise ValueError(f"unsupported trade side for settlement: {side}")
+
+        # Debit source locked
+        cur = con.execute(
+            """
+            UPDATE accounts
+            SET locked_credits = locked_credits - ?
+            WHERE account_id=? AND locked_credits >= ?
+            """,
+            (amt, src, amt),
+        )
+        if cur.rowcount != 1:
+            con.execute("ROLLBACK;")
+            raise ValueError("insufficient locked credits for settlement")
+
+        # Credit destination available credits
+        cur = con.execute(
+            "UPDATE accounts SET credits = credits + ? WHERE account_id=?",
+            (amt, dst),
+        )
+        if cur.rowcount != 1:
+            con.execute("ROLLBACK;")
+            raise ValueError("unknown destination account")
+
+        con.execute("COMMIT;")
+        return True
+
+    except Exception:
+        try:
+            con.execute("ROLLBACK;")
+        except Exception:
+            pass
+        raise
 
 
 @app.get("/redeem_log", response_model=List[RedeemLogEntryOut])
@@ -1229,3 +1530,9 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         raise
     finally:
         con.close()
+
+
+@app.get("/admin/ping")
+def admin_ping(req: Request):
+    require_admin(req)
+    return {"ok": True}

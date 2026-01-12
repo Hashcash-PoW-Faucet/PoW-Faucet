@@ -4,6 +4,18 @@
   <meta charset="utf-8">
   <link rel="stylesheet" href="styles.css">
   <title>Hashcash PoW Faucet</title>
+  <style>
+    /* DEX: stack cards vertically (no columns) */
+    .dex-grid {
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 14px !important;
+    }
+    .dex-card {
+      width: 100% !important;
+      box-sizing: border-box;
+    }
+  </style>
 </head>
 <body>
   <h1>
@@ -15,10 +27,10 @@
   <p>
     Create an anonymous address and claim credit points by completing
     <a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style anti-spam Proof-of-Work tasks.
-    Credits can be sent to other accounts without fees.
+    Credits can be sent to other accounts without fees. This tech demo also includes an experimental non-custodial P2P DEX to trade credits for VECO (other crypto currencies might be added later). VECO coins are paid directly to the other user; the server only watches the chain and updates trade status.
   </p>
   <p>
-    This tech demo also includes a simple redemption mechanism whereby burning credit points may result in small tips in one of the following supported cryptocurrencies:
+    The Web App also includes a simple redemption mechanism whereby burning credit points may result in small tips in one of the following supported cryptocurrencies:
   </p>
   <div id="supported-coins">
     <p>Loading supported coins…</p>
@@ -78,6 +90,72 @@
     <button id="btn-send">Send credits</button>
     <div id="send-status" class="section-status" style="margin-top:10px;"></div>
   </div>
+
+    <hr>
+
+  <div id="dex-section">
+    <h2>DEX (alpha)</h2>
+    <p style="opacity:0.85; margin-top:-6px;">
+      This is a non-custodial P2P exchange. The DEX never receives or holds your coins — you pay the counterparty’s address directly.
+      A watcher confirms the payment on-chain and tracks confirmations until settlement.
+    </p>
+
+    <div class="dex-grid">
+      <!-- Card 1: Create order -->
+      <div class="dex-card">
+        <h3 style="margin-top:0;">Create order</h3>
+
+        <label for="dex-side">Side:</label>
+        <select id="dex-side">
+          <option value="SELL_CREDITS">SELL_CREDITS</option>
+          <option value="BUY_CREDITS">BUY_CREDITS</option>
+        </select>
+
+        <label for="dex-currency">Currency:</label>
+        <select id="dex-currency">
+          <option value="VECO">VECO</option>
+        </select>
+
+        <label for="dex-credits">Credits amount:</label>
+        <input id="dex-credits" type="number" min="1" step="1" value="5">
+
+        <label for="dex-price">Price (coin per credit):</label>
+        <input id="dex-price" type="number" min="0" step="0.00000001" value="0.2">
+
+        <div id="dex-payto-wrap">
+          <label for="dex-payto">Pay to address (where you receive the coin payment):</label>
+          <input id="dex-payto" type="text" size="60" placeholder="Paste your coin address here">
+        </div>
+
+        <div style="display:flex; gap:10px; align-items:center; margin-top:10px;">
+          <button id="btn-dex-place" type="button">Place order</button>
+        </div>
+        <div id="dex-status" class="section-status" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- Card 2: Open orders -->
+      <div class="dex-card">
+        <h3 style="margin-top:0;">Open orders</h3>
+        <small style="opacity:0.8;">Take creates a trade. Makers can cancel their own OPEN orders.</small>
+        <div style="margin-top:10px;" id="dex-open-orders" class="dex-mono">Loading…</div>
+      </div>
+
+      <!-- Card 3: My trades -->
+      <div class="dex-card">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h3 style="margin-top:0; margin-bottom:0;">My trades</h3>
+          <button id="btn-dex-refresh" type="button" style="margin-left:auto;">Refresh</button>
+        </div>
+        <small style="opacity:0.8;">Shows confirmations progress (confs / required) until settlement.</small>
+        <div style="margin-top:10px;" id="dex-my-trades" class="dex-mono">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+
+
 
   <div id="redeem-section">
     <h2>Redeem / tips (experimental)</h2>
@@ -147,13 +225,12 @@
   </section>
    <section id="disclaimer">
     <h2>Disclaimer</h2>
-   <p>
+    <p>
       Disclaimer: Credits in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
-      Any crypto tip is purely discretionary, may be small, irregular or skipped entirely,
-      and can be changed or discontinued at any time. There is no guaranteed probability,
-      minimum or maximum payout and no right or expectation of any payment.
+      Any crypto tip is purely discretionary, may be small, irregular or skipped entirely, and can be changed or discontinued at any time. There is no guaranteed probability,
+      minimum or maximum payout and no right or expectation of any payment. The experimental DEX is non-custodial: we do not hold or escrow your coins; payments are made directly
+      on-chain between users. Trades may fail, expire, or be delayed (including due to network conditions, confirmations, wrong amounts, or chain reorgs). Use at your own risk.
     </p>
-  </section>
   </section>
    <section id="links">
     <h2>Links</h2>
@@ -169,7 +246,7 @@
   <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js"></script>
 
   <script>
-    // const BASE_URL = "http://127.0.0.1:8000"; // backend FastAPI URL
+    // const BASE_URL = "http://127.0.0.1:8200"; // backend FastAPI URL
     const BASE_URL = "/api"; //production
     let faucetConfig = null; // will be filled from /config
     let autoMineEnabled = false;
@@ -261,6 +338,7 @@
         }
         const cfg = await res.json();
         faucetConfig = cfg;
+        populateDexCurrencies();
 
         // If present, update minimum redeem credits text in the redeem section
         const minRedeemEl = document.getElementById("min-redeem-credits");
@@ -536,6 +614,7 @@
       const accountSection = document.getElementById("account-section");
       const sendSection = document.getElementById("send-section");
       const redeemSection = document.getElementById("redeem-section");
+      const dexSection = document.getElementById("dex-section");
 
       // Account management (including private key import) should always be visible
       if (accountSection) accountSection.style.display = "";
@@ -545,11 +624,13 @@
         if (earnSection) earnSection.style.display = "";
         if (sendSection) sendSection.style.display = "";
         if (redeemSection) redeemSection.style.display = "";
+        if (dexSection) dexSection.style.display = "";
       } else {
         if (signupSection) signupSection.style.display = "";
         if (earnSection) earnSection.style.display = "none";
         if (sendSection) sendSection.style.display = "none";
         if (redeemSection) redeemSection.style.display = "none";
+        if (dexSection) dexSection.style.display = "none";
       }
     }
 
@@ -820,6 +901,558 @@
       }
     }
 
+    // ---------------------------
+// DEX UI helpers
+// ---------------------------
+
+function getRequiredConfs(currency) {
+  const sym = String(currency || "").toUpperCase();
+  const c = faucetConfig && faucetConfig.coins && faucetConfig.coins[sym];
+
+  // Preferred field (per coin): cfg.coins[SYM].dex_min_confs
+  const perCoin = c && (c.dex_min_confs ?? c.min_confs ?? c.min_confirmations);
+
+  // Optional global fallback if backend ever exposes it top-level
+  const globalMc = faucetConfig && (faucetConfig.dex_min_confs ?? faucetConfig.min_confs ?? faucetConfig.min_confirmations);
+
+  const val = (typeof perCoin === "number" ? perCoin : (typeof globalMc === "number" ? globalMc : 1));
+  return Math.max(0, Math.floor(val));
+}
+
+function shortTxid(s) {
+  if (!s) return "-";
+  const str = String(s);
+  if (str.length <= 16) return str;
+  return str.slice(0, 10) + "…" + str.slice(-6);
+}
+
+function myAccountAddress() {
+  return (lastAccountData && lastAccountData.account_id) || currentAddress || null;
+}
+
+// Persistently hide settled trades (client-side only)
+const DEX_HIDDEN_TRADES_KEY = "dex_hidden_trade_ids";
+
+function loadHiddenTradeIds() {
+  try {
+    const raw = localStorage.getItem(DEX_HIDDEN_TRADES_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.map((x) => Number(x)).filter((n) => Number.isFinite(n)));
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function saveHiddenTradeIds(setObj) {
+  try {
+    const arr = Array.from(setObj.values());
+    localStorage.setItem(DEX_HIDDEN_TRADES_KEY, JSON.stringify(arr));
+  } catch (e) {
+    // ignore
+  }
+}
+
+function isTradeHidden(tradeId) {
+  const id = Number(tradeId);
+  if (!Number.isFinite(id)) return false;
+  return loadHiddenTradeIds().has(id);
+}
+
+function hideTrade(tradeId) {
+  const id = Number(tradeId);
+  if (!Number.isFinite(id)) return;
+  const s = loadHiddenTradeIds();
+  s.add(id);
+  saveHiddenTradeIds(s);
+}
+
+
+function formatCoinAmount(amountCoin) {
+  const n = Number(amountCoin);
+  if (!Number.isFinite(n)) return "-";
+  let s = n.toFixed(8);
+  s = s.replace(/\.0+$/, "");
+  s = s.replace(/(\.[0-9]*?)0+$/, "$1");
+  return s;
+}
+
+function formatDurationHMS(totalSeconds) {
+  const sec = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
+}
+
+function coinFromSats(sats) {
+  const n = Number(sats);
+  if (!Number.isFinite(n)) return NaN;
+  return n / 100000000;
+}
+
+function satsFromCoin(amountCoin) {
+  const n = Number(amountCoin);
+  if (!Number.isFinite(n)) return NaN;
+  return Math.round(n * 100000000);
+}
+
+function populateDexCurrencies() {
+  const sel = document.getElementById("dex-currency");
+  if (!sel) return;
+
+  let syms = [];
+
+  // Prefer explicit per-coin flag from /config
+  if (faucetConfig && faucetConfig.coins && typeof faucetConfig.coins === "object") {
+    syms = Object.keys(faucetConfig.coins).filter((sym) => {
+      const c = faucetConfig.coins[sym];
+      return c && c.dex_enabled === true;
+    });
+  }
+
+  // Fallback (keep UI usable if config is missing or no coin is enabled yet)
+  if (syms.length === 0) syms = ["VECO"];
+
+  sel.innerHTML = "";
+  syms.sort().forEach((sym) => {
+    const opt = document.createElement("option");
+    opt.value = sym;
+    opt.textContent = sym;
+    sel.appendChild(opt);
+  });
+}
+
+function setDexStatus(msg) {
+  const el = document.getElementById("dex-status");
+  if (!el) return;
+  el.textContent = msg;
+  console.log(msg);
+}
+
+function updateDexPaytoVisibility() {
+  const sideEl = document.getElementById("dex-side");
+  const wrap = document.getElementById("dex-payto-wrap");
+  const payToEl = document.getElementById("dex-payto");
+  if (!sideEl || !wrap) return;
+
+  const side = (sideEl.value || "").trim();
+  const show = (side === "SELL_CREDITS");
+  wrap.style.display = show ? "" : "none";
+
+  if (!show && payToEl) payToEl.value = "";
+}
+
+async function dexFetchJson(path, opts = {}) {
+  const url = `${BASE_URL}${path}`;
+  const headers = Object.assign({}, opts.headers || {});
+  if (accountId) headers["Authorization"] = "Bearer " + accountId;
+
+  const res = await fetch(url, Object.assign({}, opts, { headers }));
+  if (!res.ok) {
+    let msg;
+    try {
+      const j = await res.json();
+      msg = j.detail || JSON.stringify(j);
+    } catch (e) {
+      msg = await res.text();
+    }
+    throw new Error(`${res.status} ${res.statusText}: ${msg}`);
+  }
+  return await res.json();
+}
+
+async function refreshDex() {
+  if (!accountId) return;
+  await Promise.allSettled([refreshDexOpenOrders(), refreshDexMyTrades()]);
+}
+
+async function refreshDexOpenOrders() {
+  const el = document.getElementById("dex-open-orders");
+  if (!el) return;
+  try {
+    const orders = await dexFetchJson(`/dex/orders?status=OPEN&limit=20`, { method: "GET" });
+    renderDexOpenOrders(orders);
+  } catch (e) {
+    console.error(e);
+    el.textContent = "Open orders unavailable: " + e;
+  }
+}
+
+function renderDexOpenOrders(orders) {
+  const el = document.getElementById("dex-open-orders");
+  if (!el) return;
+
+  if (!orders || orders.length === 0) {
+    el.textContent = "No open orders.";
+    return;
+  }
+
+  const sorted = orders.slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  el.innerHTML = "";
+
+  sorted.forEach((o) => {
+    const row = document.createElement("div");
+    row.className = "dex-row";
+
+    const mine = o.maker_account_id && myAccountAddress() && (o.maker_account_id === myAccountAddress());
+    const side = o.side || "-";
+    const cur = o.currency || "-";
+    const amt = Number(o.credits_amount ?? 0);
+    const ppcSat = Number(o.price_sat_per_credit ?? 0);
+    const ppcCoin = coinFromSats(ppcSat);
+    const totalCoin = (Number.isFinite(amt) && Number.isFinite(ppcCoin)) ? (amt * ppcCoin) : NaN;
+
+    const verb = (side === "BUY_CREDITS") ? "Buy" : (side === "SELL_CREDITS") ? "Sell" : side;
+
+    const info = document.createElement("div");
+    info.innerHTML =
+      `<strong>#${o.order_id}</strong> ${verb} ${formatCoinAmount(amt)} credits for <strong>${formatCoinAmount(totalCoin)} ${cur}</strong>` +
+      ` <span style="opacity:0.85;">(${formatCoinAmount(ppcCoin)} ${cur}/credit)</span><br>` +
+      `<span style="opacity:0.8;">maker=${shortenAccountId(o.maker_account_id)}</span>`;
+
+    const actions = document.createElement("div");
+    actions.className = "dex-actions";
+
+    if (mine) {
+      const btn = document.createElement("button");
+      btn.textContent = "Cancel";
+      btn.type = "button";
+      btn.addEventListener("click", () => cancelDexOrder(o.order_id));
+      actions.appendChild(btn);
+    } else {
+      const btn = document.createElement("button");
+      btn.textContent = "Take";
+      btn.type = "button";
+      btn.addEventListener("click", () => takeDexOrder(o));
+      actions.appendChild(btn);
+    }
+
+    row.appendChild(info);
+    row.appendChild(actions);
+    el.appendChild(row);
+  });
+}
+
+async function refreshDexMyTrades() {
+  const el = document.getElementById("dex-my-trades");
+  if (!el) return;
+  try {
+    const states = ["WAIT_PAYMENT", "CONFIRMED", "SETTLED"];
+    const results = await Promise.allSettled(
+      states.map((st) => dexFetchJson(`/dex/trades/mine?state=${encodeURIComponent(st)}`, { method: "GET" }))
+    );
+
+    const all = [];
+    for (const r of results) {
+      if (r.status === "fulfilled" && Array.isArray(r.value)) all.push(...r.value);
+    }
+
+    const byId = new Map();
+    all.forEach((t) => {
+      if (t && (t.trade_id || t.trade_id === 0)) byId.set(t.trade_id, t);
+    });
+
+    const trades = Array.from(byId.values())
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+      .filter((t) => !isTradeHidden(t.trade_id))
+      .slice(0, 10);
+
+    renderDexMyTrades(trades);
+  } catch (e) {
+    console.error(e);
+    el.textContent = "My trades unavailable: " + e;
+  }
+}
+
+function renderDexMyTrades(trades) {
+  const el = document.getElementById("dex-my-trades");
+  if (!el) return;
+
+  if (!trades || trades.length === 0) {
+    el.textContent = "No trades yet.";
+    return;
+  }
+
+  el.innerHTML = "";
+
+  trades.forEach((t) => {
+    const row = document.createElement("div");
+    row.className = "dex-row";
+
+    // Normalize fields for robust comparison and display
+    const side = String(t.side || "-").trim().toUpperCase();
+    const cur = String(t.currency || "-").trim().toUpperCase();
+    const amt = Number(t.credits_amount ?? 0);
+    const expSat = Number(t.expected_sats ?? NaN);
+    const expCoin = coinFromSats(expSat);
+    const state = String(t.state || "-").trim().toUpperCase();
+
+    // Who am I in this trade?
+    const me = myAccountAddress();
+    const makerId = String(t.maker_account_id ?? t.maker ?? t.maker_id ?? "").trim();
+    const takerId = String(t.taker_account_id ?? t.taker ?? t.taker_id ?? "").trim();
+
+    const isMaker = !!(me && makerId && makerId === me);
+    // Some endpoints may omit taker id; if maker id is present and it's not me, assume I'm the taker.
+    const isTaker = !!(
+      (me && takerId && takerId === me) ||
+      (me && makerId && makerId !== me)
+    );
+
+    // Perspective-adjusted verb (invert for taker)
+    const verb = (side === "BUY_CREDITS")
+      ? (isMaker ? "Buy" : "Sell")
+      : (side === "SELL_CREDITS")
+        ? (isMaker ? "Sell" : "Buy")
+        : side;
+
+    // Determine who must pay the on-chain coins in WAIT_PAYMENT.
+    // pay_to_address is always the coin recipient address for the on-chain payment.
+    let payerIsMe = false;
+    let payeeIsMe = false;
+    if (side === "SELL_CREDITS") {
+      // Maker sells credits, taker must pay coins to maker.
+      payerIsMe = isTaker;
+      payeeIsMe = isMaker;
+    } else if (side === "BUY_CREDITS") {
+      // Maker buys credits, maker must pay coins to taker.
+      payerIsMe = isMaker;
+      payeeIsMe = isTaker;
+    }
+
+    const confsRaw = (typeof t.confs === "number" ? t.confs : 0);
+    const req = getRequiredConfs(cur);
+
+    // UI fix: if already settled, treat confirmations as complete.
+    const nowLocal = Math.floor(Date.now() / 1000);
+    const serverNow = nowLocal + serverTimeOffset;
+    const expiresAt = (typeof t.expires_at === "number" ? t.expires_at : Number(t.expires_at || 0));
+    const isExpiredByTime = (state === "WAIT_PAYMENT" && expiresAt > 0 && (expiresAt - serverNow) <= 0);
+
+    // Also honor explicit backend failure states if they exist.
+    const rawState = state;
+    const failedStates = new Set(["FAILED", "EXPIRED", "CANCELLED", "CANCELED", "REFUSED", "REJECTED"]);
+    const isFailedState = failedStates.has(rawState);
+
+    const stateDisplay = (isExpiredByTime || isFailedState) ? "FAILED" : rawState;
+    const failReason = isExpiredByTime || rawState === "EXPIRED" ? "trade expired" : "";
+
+    const confsShown = (stateDisplay === "SETTLED") ? req : confsRaw;
+    const remaining = Math.max(0, req - confsShown);
+
+    // Only show expiry while *still* waiting and not already expired.
+    let extra = "";
+    if (stateDisplay === "WAIT_PAYMENT" && expiresAt > 0) {
+      const left = Math.max(0, (expiresAt - serverNow));
+      extra = `, expires in ${formatDurationHMS(left)}`;
+    }
+
+    const info = document.createElement("div");
+
+    const expCoinText = formatCoinAmount(expCoin);
+
+    let instructionLine = "";
+    if (stateDisplay === "FAILED") {
+      instructionLine =
+        `<div style="margin-top:6px; padding:6px 8px; border:1px solid rgba(255,255,255,0.15); border-radius:8px; background:rgba(0,0,0,0.18);">` +
+        `❌ <strong>Failed</strong>${failReason ? ` — ${failReason}` : ""}` +
+        `</div>`;
+    } else if (stateDisplay === "WAIT_PAYMENT") {
+      const addr = (t.pay_to_address || "").trim();
+
+      if (!addr) {
+        instructionLine =
+          `<div style="margin-top:6px; opacity:0.9;">Waiting for payment details…</div>`;
+      } else if (payerIsMe) {
+        // I must send the on-chain coins to the recipient address.
+        instructionLine =
+          `<div style="margin-top:6px; padding:6px 8px; border:1px solid rgba(255,255,255,0.15); border-radius:8px; background:rgba(0,0,0,0.18);">` +
+          `<strong>Payment required:</strong> send <strong>${expCoinText} ${cur}</strong> to<br>` +
+          `<span style="word-break:break-all;">${addr}</span>` +
+          `</div>`;
+      } else {
+        // Counterparty must pay; I'm waiting.
+        const who = payeeIsMe ? "to your address" : "to";
+        instructionLine =
+          `<div style="margin-top:6px; padding:6px 8px; border:1px solid rgba(255,255,255,0.15); border-radius:8px; background:rgba(0,0,0,0.18);">` +
+          `⏳ <strong>Waiting for payment</strong> ${who}<br>` +
+          `<span style="word-break:break-all;">${addr}</span>` +
+          `</div>`;
+      }
+    } else if (stateDisplay === "CONFIRMED") {
+      const txFull = String(t.txid || "").trim();
+      if (txFull) {
+        instructionLine =
+          `<div style="margin-top:6px; padding:6px 8px; border:1px solid rgba(255,255,255,0.15); border-radius:8px; background:rgba(0,0,0,0.18);">` +
+          `⏳ <strong>Payment detected</strong>. Waiting for <strong>${remaining}</strong> more confirmation(s).<br>` +
+          `<span style="opacity:0.9;">txid:</span> <span style="word-break:break-all;">${txFull}</span>` +
+          `</div>`;
+      } else {
+        instructionLine =
+          `<div style="margin-top:6px; opacity:0.9;">⏳ Payment detected. Waiting for <strong>${remaining}</strong> more confirmation(s)…</div>`;
+      }
+    } else if (stateDisplay === "SETTLED") {
+      const txFull = String(t.txid || "").trim();
+      if (txFull) {
+        instructionLine =
+          `<div style="margin-top:6px; padding:6px 8px; border:1px solid rgba(255,255,255,0.15); border-radius:8px; background:rgba(0,0,0,0.18);">` +
+          `✅ <strong>Settled</strong><br>` +
+          `<span style="opacity:0.9;">txid:</span> <span style="word-break:break-all;">${txFull}</span>` +
+          `</div>`;
+      } else {
+        instructionLine =
+          `<div style="margin-top:6px; opacity:0.9;">✅ Settled</div>`;
+      }
+    }
+
+    const metaLine = (stateDisplay === "FAILED")
+      ? `state=FAILED${failReason ? ` - ${failReason}` : ""}`
+      : `state=${stateDisplay} · confs=${confsShown}/${req}${extra}`;
+
+    info.innerHTML =
+      `<strong>#${t.trade_id}</strong> (order #${t.order_id}) ${verb} ${formatCoinAmount(amt)} credits for <strong>${expCoinText} ${cur}</strong><br>` +
+      `<span style="opacity:0.85;">${metaLine}</span>` +
+      instructionLine;
+
+    row.appendChild(info);
+
+    // Only show an action button for settled trades (client-side hide)
+    if (stateDisplay === "SETTLED") {
+      const actions = document.createElement("div");
+      actions.className = "dex-actions";
+
+      const hideBtn = document.createElement("button");
+      hideBtn.type = "button";
+      hideBtn.textContent = "✖";
+      hideBtn.title = "Hide this settled trade";
+      hideBtn.addEventListener("click", async () => {
+        hideTrade(t.trade_id);
+        setDexStatus(`Hidden settled trade #${t.trade_id}.`);
+        await refreshDexMyTrades();
+      });
+
+      actions.appendChild(hideBtn);
+      row.appendChild(actions);
+    }
+    el.appendChild(row);
+  });
+}
+
+async function placeDexOrder() {
+  if (!accountId) {
+    setDexStatus("No private key loaded – please signup or import one first.");
+    return;
+  }
+
+  const side = (document.getElementById("dex-side")?.value || "").trim();
+  const currency = (document.getElementById("dex-currency")?.value || "").trim();
+  const credits = parseInt(document.getElementById("dex-credits")?.value, 10);
+  const priceCoinPerCredit = parseFloat(document.getElementById("dex-price")?.value);
+  const payTo = (document.getElementById("dex-payto")?.value || "").trim();
+
+  if (!side || !currency) return setDexStatus("Please select side and currency.");
+  if (!Number.isFinite(credits) || credits <= 0) return setDexStatus("Enter a valid credits amount.");
+  if (!Number.isFinite(priceCoinPerCredit) || priceCoinPerCredit <= 0) return setDexStatus("Enter a valid price (coin/credit).");
+  if (side === "SELL_CREDITS" && !payTo) return setDexStatus("SELL_CREDITS needs pay_to_address.");
+
+  const priceSatPerCredit = satsFromCoin(priceCoinPerCredit);
+  if (!Number.isFinite(priceSatPerCredit) || priceSatPerCredit <= 0) return setDexStatus("Price conversion failed.");
+
+  const payload = {
+    side,
+    currency,
+    credits_amount: credits,
+    price_sat_per_credit: priceSatPerCredit
+  };
+
+  if (side === "SELL_CREDITS") {
+    payload.pay_to_address = payTo;
+  }
+
+  try {
+    setDexStatus("Placing order…");
+    const created = await dexFetchJson(`/dex/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    setDexStatus(`Order placed: #${created.order_id} (${created.status})`);
+    await refreshAccount();
+    await refreshDex();
+  } catch (e) {
+    console.error(e);
+    setDexStatus("Place order failed: " + e);
+  }
+}
+
+async function takeDexOrder(order) {
+  try {
+    const orderId = (order && (order.order_id ?? order.id)) ? Number(order.order_id ?? order.id) : Number(order);
+    if (!Number.isFinite(orderId)) {
+      setDexStatus("Take failed: invalid order id");
+      return;
+    }
+
+    const side = String(order && order.side ? order.side : "").trim().toUpperCase();
+    const cur = String(order && order.currency ? order.currency : "").trim().toUpperCase();
+
+    const payload = {};
+
+    // BUY_CREDITS: Maker will pay coins to the taker. We must provide taker's pay-to address.
+    if (side === "BUY_CREDITS") {
+      const key = `dex_taker_payto_${cur || "COIN"}`;
+      const last = (localStorage.getItem(key) || "").trim();
+      const addr = (window.prompt(
+        `This is a BUY order. Enter your ${cur || "coin"} address to receive payment:`,
+        last
+      ) || "").trim();
+
+      if (!addr) {
+        setDexStatus("Take canceled (missing taker payment address). ");
+        return;
+      }
+
+      payload.taker_pay_to_address = addr;
+      localStorage.setItem(key, addr);
+    }
+
+    setDexStatus(`Taking order #${orderId}…`);
+
+    const trade = await dexFetchJson(`/dex/orders/${orderId}/take`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    setDexStatus(`Trade created: #${trade.trade_id} (state=${trade.state})`);
+    await refreshAccount();
+    await refreshDex();
+  } catch (e) {
+    console.error(e);
+    setDexStatus("Take failed: " + e);
+  }
+}
+
+async function cancelDexOrder(orderId) {
+  try {
+    setDexStatus(`Canceling order #${orderId}…`);
+    const resp = await dexFetchJson(`/dex/orders/${orderId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    setDexStatus(resp.detail ? `Canceled: ${resp.detail}` : `Order #${orderId} canceled.`);
+    await refreshAccount();
+    await refreshDex();
+  } catch (e) {
+    console.error(e);
+    setDexStatus("Cancel failed: " + e);
+  }
+}
+
     document.getElementById("btn-signup").addEventListener("click", () => {
       signup().catch(err => {
         console.error(err);
@@ -1062,9 +1695,40 @@
       });
     }
 
+    // DEX UI events
+    const dexSideEl = document.getElementById("dex-side");
+    if (dexSideEl) {
+      dexSideEl.addEventListener("change", updateDexPaytoVisibility);
+      updateDexPaytoVisibility();
+    }
+
+    const dexPlaceBtn = document.getElementById("btn-dex-place");
+    if (dexPlaceBtn) {
+      dexPlaceBtn.addEventListener("click", () => placeDexOrder());
+    }
+
+    const dexRefreshBtn = document.getElementById("btn-dex-refresh");
+    if (dexRefreshBtn) {
+      dexRefreshBtn.addEventListener("click", () => refreshDex());
+    }
+
     // Initial UI state
     updateVisibility();
     refreshRedeemLog();
+    if (accountId) {
+      refreshAccount().then(() => refreshDex()).catch(() => refreshDex());
+    }
+
+    // Poll DEX status so confirmations progress is visible
+    setInterval(() => {
+      if (!accountId) return;
+      refreshAccount()
+        .then(() => refreshDex())
+        .catch((e) => {
+          console.error("DEX refresh error:", e);
+          refreshDex().catch((e2) => console.error("DEX refresh error:", e2));
+        });
+    }, 5000);
 
     // Load server config (signup_bits, min_redeem_credits, etc.) and then refresh account
     loadConfig().then(() => {
