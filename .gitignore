@@ -3,6 +3,7 @@ backend/coins.json
 backend/.env
 backend/.client_pow_demo.py
 backend/faucet_old.db
+backend/faucet.db
 backend/redeem_queue.jsonl
 .idea/
 __pycache__/
