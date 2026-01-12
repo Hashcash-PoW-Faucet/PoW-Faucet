@@ -1105,13 +1105,14 @@ function renderDexOpenOrders(orders) {
     const ppcCoin = coinFromSats(ppcSat);
     const totalCoin = (Number.isFinite(amt) && Number.isFinite(ppcCoin)) ? (amt * ppcCoin) : NaN;
 
-    const verb = (side === "BUY_CREDITS") ? "Buy" : (side === "SELL_CREDITS") ? "Sell" : side;
+    const verb = (side === "BUY_CREDITS") ? "buy" : (side === "SELL_CREDITS") ? "sell" : side;
 
     const info = document.createElement("div");
     info.innerHTML =
-      `<strong>#${o.order_id}</strong> ${verb} ${formatCoinAmount(amt)} credits for <strong>${formatCoinAmount(totalCoin)} ${cur}</strong>` +
-      ` <span style="opacity:0.85;">(${formatCoinAmount(ppcCoin)} ${cur}/credit)</span><br>` +
-      `<span style="opacity:0.8;">maker=${shortenAccountId(o.maker_account_id)}</span>`;
+      `<strong>#${o.order_id}</strong><br>` +
+      `<span style="opacity:0.8;">maker=${shortenAccountId(o.maker_account_id)} wants to </span>` +
+      `${verb} ${formatCoinAmount(amt)} credits for <strong>${formatCoinAmount(totalCoin)} ${cur}</strong> ` +
+      `<span style="opacity:0.85;">(${formatCoinAmount(ppcCoin)} ${cur}/credit)</span>`;
 
     const actions = document.createElement("div");
     actions.className = "dex-actions";
