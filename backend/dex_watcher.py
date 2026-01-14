@@ -387,12 +387,16 @@ def get_tx_confirmations(coin: Dict[str, Any], txid: str) -> int:
         pass
 
     # 2) Raw tx (verbose)
-    try:
-        res = rpc_call(coin, "getrawtransaction", [txid, True])
-        c = int(res.get("confirmations", 0))
-        return max(0, c)
-    except Exception:
-        return 0
+    # Some older forks expect the verbose flag as an int (0/1) rather than a bool.
+    # Try int first for compatibility, then bool.
+    for verbose in (1, True):
+        try:
+            res = rpc_call(coin, "getrawtransaction", [txid, verbose])
+            c = int(res.get("confirmations", 0))
+            return max(0, c)
+        except Exception:
+            continue
+    return 0
 
 
 def get_one_block_back_hash(coin: Dict[str, Any]) -> str:
