@@ -991,6 +991,10 @@ def get_config():
             "homepage": cfg.get("homepage") or "",
             "dex_min_confs": int(cfg.get("dex_min_confs") or cfg.get("min_confs") or DEX_MIN_CONFS),
             "dex_enabled": bool(cfg.get("dex_enabled") or False),
+            # Public redeem/tip range metadata (safe to expose):
+            # Keep as strings to avoid float formatting surprises in the UI.
+            "min_tip": str(cfg.get("min_tip", "")) if cfg.get("min_tip") is not None else "",
+            "max_tip": str(cfg.get("max_tip", "")) if cfg.get("max_tip") is not None else "",
         }
 
     return ConfigOut(

@@ -35,12 +35,17 @@
   <div id="supported-coins">
     <p>Loading supported coins…</p>
   </div>
+  To use the redeem and DEX features, you first need to mine an account once by solving a small Proof-of-Work puzzle. Depending on your hardware, this can take anywhere from minutes to hours.
   <p class="about-link"><a href="#about">Tell me more!</a></p>
 </div>
 
   <div id="signup-section">
     <button id="btn-signup">Signup (PoW)</button>
     <div id="account-info"></div>
+
+    <!-- If the final signup submit fails (network/proxy), allow retry without re-mining -->
+    <button id="btn-signup-retry" type="button" style="display:none; margin-top:8px;">Retry signup submit</button>
+    <div id="signup-retry-hint" class="section-status" style="margin-top:6px;"></div>
   </div>
 
   <hr>
@@ -63,6 +68,44 @@
   </div>
 
   <hr>
+
+  <div id="redeem-section">
+    <h2>Redeem / tips (experimental)</h2>
+    <p>
+      To request a redeem, you must own at least
+      <span id="min-redeem-credits">20</span> credits. Depending on the coin, each redeem request permanently
+      burns a fixed number of credits (e.g. 10) from your balance, even if no tip is sent.
+    </p>
+    <label for="redeem-address">Tip address:</label>
+    <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
+    <label for="redeem-currency">Currency:</label>
+    <select id="redeem-currency">
+      <option value="LCC">LCC</option>
+      <option value="GRS">GRS</option>
+      <option value="SLM">SLM</option>
+      <option value="VECO">VECO</option>
+    </select>
+    <button id="btn-redeem">Request redeem</button>
+    <div id="redeem-status" class="section-status" style="margin-top:10px;"></div>
+
+    <h3 style="margin-top: 18px;">Redeem log</h3>
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+      <small style="opacity:0.8;">Shows the last 10 redeem requests from the server audit queue (public faucet log).</small>
+      <button id="btn-clear-redeem-log" type="button" style="margin-left:auto;">Refresh</button>
+    </div>
+    <div id="redeem-log" style="
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(0,0,0,0.25);
+      max-height: 180px;
+      overflow: auto;
+    ">No redeems yet.</div>
+  </div>
 
   <div id="account-section">
     <h2>Account management</h2>
@@ -92,6 +135,8 @@
   </div>
 
     <hr>
+
+  <hr>
 
   <div id="dex-section">
     <h2>DEX (alpha)</h2>
@@ -154,47 +199,6 @@
 
   <hr>
 
-
-
-
-  <div id="redeem-section">
-    <h2>Redeem / tips (experimental)</h2>
-    <p>
-      To request a redeem, you must own at least
-      <span id="min-redeem-credits">20</span> credits. Depending on the coin, each redeem request permanently
-      burns a fixed number of credits (e.g. 10) from your balance, even if no tip is sent.
-    </p>
-    <label for="redeem-address">Tip address:</label>
-    <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
-    <label for="redeem-currency">Currency:</label>
-    <select id="redeem-currency">
-      <option value="LCC">LCC</option>
-      <option value="GRS">GRS</option>
-      <option value="SLM">SLM</option>
-      <option value="VECO">VECO</option>
-    </select>
-    <button id="btn-redeem">Request redeem</button>
-    <div id="redeem-status" class="section-status" style="margin-top:10px;"></div>
-
-    <h3 style="margin-top: 18px;">Redeem log</h3>
-    <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
-      <small style="opacity:0.8;">Shows the last 10 redeem requests from the server audit queue (public faucet log).</small>
-      <button id="btn-clear-redeem-log" type="button" style="margin-left:auto;">Refresh</button>
-    </div>
-    <div id="redeem-log" style="
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-      font-size: 12px;
-      line-height: 1.35;
-      white-space: pre-wrap;
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 8px;
-      padding: 10px;
-      background: rgba(0,0,0,0.25);
-      max-height: 180px;
-      overflow: auto;
-    ">No redeems yet.</div>
-  </div>
-
     <section id="about">
     <h2>What is this?</h2>
     <p>
@@ -248,6 +252,64 @@
   <script>
     // const BASE_URL = "http://127.0.0.1:8200"; // backend FastAPI URL
     const BASE_URL = "/api"; //production
+
+    // Persist the final signup payload so users can retry submit if the network/proxy fails.
+    const PENDING_SIGNUP_KEY = "pending_signup_pow_v1";
+
+    function setSignupRetryUI(visible, msg = "") {
+      const btn = document.getElementById("btn-signup-retry");
+      const hint = document.getElementById("signup-retry-hint");
+      if (btn) btn.style.display = visible ? "" : "none";
+      if (hint) hint.textContent = msg || "";
+    }
+
+    function describeFetchFailure(err, url) {
+      const base = String(err || "");
+      const parts = [];
+      parts.push(`Network error while contacting the API (${url}).`);
+
+      // Common gotchas
+      if (window.location && window.location.protocol === "file:") {
+        parts.push("It looks like you opened this page as a local file (file://). The API path '/api' will not work in that case — please open the official faucet URL.");
+      }
+      if (window.location && window.location.protocol === "https:" && String(url).startsWith("http://")) {
+        parts.push("Your browser may have blocked an insecure (http) request from an https page (mixed content).");
+      }
+
+      parts.push("Please check: 1) you are online, 2) adblock/VPN/privacy shields are not blocking the request, 3) the server/proxy is reachable.");
+      parts.push("Good news: your PoW was saved locally — you can click 'Retry signup submit' without re-mining.");
+
+      if (base) parts.push("Details: " + base);
+      return parts.join(" ");
+    }
+
+    function loadPendingSignup() {
+      try {
+        const raw = localStorage.getItem(PENDING_SIGNUP_KEY);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj !== "object") return null;
+        return obj;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function savePendingSignup(payload) {
+      try {
+        localStorage.setItem(PENDING_SIGNUP_KEY, JSON.stringify(payload));
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    function clearPendingSignup() {
+      try {
+        localStorage.removeItem(PENDING_SIGNUP_KEY);
+      } catch (e) {
+        // ignore
+      }
+    }
     let faucetConfig = null; // will be filled from /config
     let autoMineEnabled = false;
     let autoMineRunning = false;
@@ -370,6 +432,16 @@
               const name = c.name || sym;
               const short = c.short || sym;
               const homepage = c.homepage || "";
+
+              // Prefer explicit redeem keys if present; otherwise fall back to tip keys
+              const minRedeem = c.min_redeem ?? c.min_tip ?? "";
+              const maxRedeem = c.max_redeem ?? c.max_tip ?? "";
+
+              const rangeSuffix =
+                (minRedeem !== "" || maxRedeem !== "")
+                  ? ` — redeem: ${minRedeem !== "" ? minRedeem : "?"}–${maxRedeem !== "" ? maxRedeem : "?"} ${short}`
+                  : "";
+
               const p = document.createElement("p");
               if (homepage) {
                 const a = document.createElement("a");
@@ -378,8 +450,11 @@
                 a.rel = "noopener noreferrer";
                 a.textContent = `${name} (${short})`;
                 p.appendChild(a);
+
+                // Add redeem range as plain text after the link
+                if (rangeSuffix) p.appendChild(document.createTextNode(rangeSuffix));
               } else {
-                p.textContent = `${name} (${short})`;
+                p.textContent = `${name} (${short})${rangeSuffix}`;
               }
               coinsContainer.appendChild(p);
             });
@@ -702,31 +777,56 @@
         ts: ts
       };
 
-      const res = await fetch(`${BASE_URL}/signup_pow`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
+      // Save the payload so the user can retry submit if the network/proxy fails.
+      savePendingSignup(payload);
 
-      if (!res.ok) {
-        const text = await res.text();
-        setStatus("Signup failed: " + text);
-        return;
-      }
+      // Try to submit (may fail with a fetch network error).
+      await submitSignupPow(payload);
+    }
 
-      const data = await res.json();
-      accountId = data.account_id;
-      localStorage.setItem("account_id", accountId);
-      updateVisibility();
-      setAccountInfo();
-      const importInput = document.getElementById("import-account");
-      if (importInput) {
-        importInput.value = accountId;
+    async function submitSignupPow(payload) {
+      const url = `${BASE_URL}/signup_pow`;
+      setSignupRetryUI(false, "");
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          // Server responded (so this is not a network-level fetch failure)
+          setStatus("Signup failed: " + text);
+          setSignupRetryUI(true, "Server rejected the signup. If this was a temporary issue, you can retry. Otherwise you may need to mine a new signup later.");
+          return;
+        }
+
+        const data = await res.json();
+        accountId = data.account_id;
+        localStorage.setItem("account_id", accountId);
+
+        // Success: clear pending payload and hide retry UI
+        clearPendingSignup();
+        setSignupRetryUI(false, "");
+
+        updateVisibility();
+        setAccountInfo();
+        const importInput = document.getElementById("import-account");
+        if (importInput) {
+          importInput.value = accountId;
+        }
+        setStatus("Signup ok. A new private key has been created. Please back it up using 'Export private key'.");
+        triggerPowSuccess();
+        await refreshAccount();
+        refreshRedeemLog();
+      } catch (err) {
+        console.error(err);
+        // Network/proxy/browser blocked the request (classic: TypeError: Failed to fetch)
+        setStatus("Error: " + describeFetchFailure(err, url));
+        setSignupRetryUI(true, "Your PoW is saved locally. Click 'Retry signup submit' once the connection works again.");
       }
-      setStatus("Signup ok. A new private key has been created. Please back it up using 'Export private key'.");
-      triggerPowSuccess();
-      await refreshAccount();
-      refreshRedeemLog();
     }
 
     async function earnCredit() {
@@ -1461,6 +1561,21 @@ async function cancelDexOrder(orderId) {
       });
     });
 
+    const retryBtn = document.getElementById("btn-signup-retry");
+    if (retryBtn) {
+      retryBtn.addEventListener("click", () => {
+        const pending = loadPendingSignup();
+        if (!pending) {
+          setSignupRetryUI(false, "No pending signup payload found.");
+          return;
+        }
+        submitSignupPow(pending).catch((err) => {
+          console.error(err);
+          setStatus("Error: " + err);
+        });
+      });
+    }
+
     document.getElementById("btn-earn").addEventListener("click", () => {
       earnCredit().catch(err => {
         console.error(err);
@@ -1716,20 +1831,51 @@ async function cancelDexOrder(orderId) {
     // Initial UI state
     updateVisibility();
     refreshRedeemLog();
+
+    // If we have a pending signup submit and no account yet, show retry UI.
+    if (!accountId) {
+      const pending = loadPendingSignup();
+      if (pending) {
+        setSignupRetryUI(true, "Pending signup PoW found. Click 'Retry signup submit' to finish account creation.");
+      }
+    }
+
     if (accountId) {
       refreshAccount().then(() => refreshDex()).catch(() => refreshDex());
     }
 
-    // Poll DEX status so confirmations progress is visible
+    // Polling: keep /me traffic low. DEX status can refresh more often than account state.
+    // - /me (account + credits + cooldown) every 20s
+    // - DEX (orders/trades/confs) every 10s
+    // Also pause polling while the tab is hidden.
+
+    const ACCOUNT_POLL_MS = 5000;
+    const DEX_POLL_MS = 10000;
+
+    function isTabVisible() {
+      return document.visibilityState === "visible";
+    }
+
+    // Account poll (/me)
     setInterval(() => {
       if (!accountId) return;
-      refreshAccount()
-        .then(() => refreshDex())
-        .catch((e) => {
-          console.error("DEX refresh error:", e);
-          refreshDex().catch((e2) => console.error("DEX refresh error:", e2));
-        });
-    }, 5000);
+      if (!isTabVisible()) return;
+      refreshAccount().catch((e) => console.error("Account refresh error:", e));
+    }, ACCOUNT_POLL_MS);
+
+    // DEX poll (no need to hit /me every time)
+    setInterval(() => {
+      if (!accountId) return;
+      if (!isTabVisible()) return;
+      refreshDex().catch((e) => console.error("DEX refresh error:", e));
+    }, DEX_POLL_MS);
+
+    // When the user returns to the tab, refresh immediately.
+    document.addEventListener("visibilitychange", () => {
+      if (!accountId) return;
+      if (!isTabVisible()) return;
+      refreshAccount().then(() => refreshDex()).catch(() => refreshDex());
+    });
 
     // Load server config (signup_bits, min_redeem_credits, etc.) and then refresh account
     loadConfig().then(() => {
