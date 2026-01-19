@@ -1,336 +1,553 @@
-/* Retro 1997-ish styles for HashCash PoW Faucet */
+/* -----------------------------
+   Modern dark / Web3-ish theme
+   ----------------------------- */
 
-/* Overall page */
-html, body {
-  margin: 0;
-  padding: 0;
-  background-color: #c0c0c0;        /* classic grey */
-  font-family: "Tahoma", "Microsoft Sans Serif", sans-serif;
-  color: #000000;
+:root{
+  --bg0:#05060a;
+  --bg1:#0b0d14;
+  --card:rgba(255,255,255,0.06);
+  --card2:rgba(255,255,255,0.085);
+  --stroke:rgba(255,255,255,0.12);
+  --stroke2:rgba(255,255,255,0.18);
+  --text:#e9ecf5;
+  --muted:rgba(233,236,245,0.70);
+  --muted2:rgba(233,236,245,0.55);
+  --accent:#7c5cff;          /* purple */
+  --accent2:#22d3ee;         /* cyan */
+  --good:#2dd4bf;
+  --warn:#fbbf24;
+  --bad:#fb7185;
+  --shadow: 0 10px 30px rgba(0,0,0,0.45);
+  --radius: 16px;
+  --radius2: 12px;
+  --pad: 16px;
+  --pad2: 12px;
+  --fw-regular: 450;
+  --fw-semibold: 600;
+  --fw-bold: 700;
 }
 
-/* Centered content column: use normal block layout and center via max-width + auto margins */
-body {
-  display: block;
-}
-
-body > * {
+/* Prevent width/padding/border from causing overflow in cards */
+*,
+*::before,
+*::after{
   box-sizing: border-box;
 }
 
-/* Main container look: like an old 800x600 page */
-body > :first-child {
-  margin-top: 20px;
+html,body{
+  margin:0;
+  padding:0;
+  background:
+    radial-gradient(1200px 800px at 20% 10%, rgba(124,92,255,0.22), transparent 55%),
+    radial-gradient(900px 700px at 85% 20%, rgba(34,211,238,0.14), transparent 50%),
+    radial-gradient(900px 800px at 70% 90%, rgba(45,212,191,0.10), transparent 55%),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
+  color:var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  font-weight: var(--fw-regular);
+  line-height:1.45;
 }
 
-body {
-  padding: 20px;
+/* Center column */
+body{
+  display:block;
+  padding: 28px 16px 44px;
 }
 
-h1, h2 {
-  font-family: "Verdana", "Arial", sans-serif;
+body > *{
+  box-sizing:border-box;
 }
 
-/* Wrap everything in a fake window */
-body {
-  background-color: #008080; /* teal backdrop vibe */
-}
-
+/* Main width */
 body > div,
 body > section,
 body > hr,
-body > script,
-body > h1 {
-  max-width: 800px;
+body > h1,
+body > p.about-link{
+  max-width: 980px;
   width: 100%;
+  margin-left:auto;
+  margin-right:auto;
 }
 
-/* Fake "browser window" */
-h1 {
-  background-color: #000080;
-  color: #ffffff;
-  padding: 8px 10px;
-  margin: 20px auto 0;
-  border-width: 2px;
-  border-style: solid;
-  border-color: #ffffff #000000 #000000 #ffffff; /* 3D window border */
-  font-size: 20px;
+/* Headline */
+h1{
+  margin: 10px auto 14px;
+  padding: 14px 16px;
+
+  /* Vertically center title with avatar */
+  display: flex;
+  align-items: center;
+  gap: 14px;
+
+  font-size: 22px;
+  letter-spacing: 0.2px;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.05));
+  border: 1px solid var(--stroke);
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow:hidden;
+  line-height: 1.2;
 }
 
-/* Sections and panels */
+h1::before{
+  content:"";
+  position:absolute;
+  inset:-2px;
+  background:
+    radial-gradient(600px 100px at 15% 0%, rgba(124,92,255,0.35), transparent 60%),
+    radial-gradient(400px 120px at 85% 10%, rgba(34,211,238,0.22), transparent 60%);
+  filter: blur(10px);
+  opacity: 0.9;
+  pointer-events:none;
+}
+
+h1 > *{ position:relative; }
+
+/* Sections as “glass” cards */
 section,
-div {
-  background-color: #c0c0c0;
-  border-width: 2px;
-  border-style: solid;
-  border-color: #ffffff #404040 #404040 #ffffff; /* raised 3D frame */
-  padding: 10px;
-  margin: 8px auto;
-  max-width: 800px;
-}
-
-section ul {
-  padding-left: 20px;
-}
-
-/* Horizontal rule like old-school */
-hr {
-  max-width: 800px;
+div{
+  background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.05));
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  padding: var(--pad);
   margin: 12px auto;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+/* Don’t style inner layout divs like cards unless they are top-level */
+section section,
+section div,
+div div,
+div section{
+  background: transparent;
   border: none;
-  border-top: 2px groove #808080;
+  box-shadow:none;
+  backdrop-filter:none;
+  padding: 0;
+  margin: 0;
+  max-width:none;
+}
+
+h2{
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  opacity: 0.95;
+}
+
+/* subtle divider */
+hr{
+  border:none;
+  border-top: 1px solid rgba(255,255,255,0.10);
+  margin: 14px auto;
+}
+
+p, li{
+  color: var(--muted);
+}
+
+strong, b{
+  font-weight: var(--fw-bold);
 }
 
 /* Links */
-a {
-  color: #0000cc;
-  text-decoration: underline;
+a{
+  color: rgba(34,211,238,0.95);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(34,211,238,0.35);
 }
-
-a:hover {
-  color: #ff0000;
-}
-
-/* Buttons */
-button {
-  background-color: #e0e0e0;
-  border: 2px outset #ffffff;
-  padding: 6px 14px;
-  margin: 6px 4px;
-  font-size: 13px;
-  min-width: 110px;
-  cursor: pointer;
-}
-
-button:active {
-  border-style: inset;
+a:hover{
+  color: var(--text);
+  border-bottom-color: rgba(124,92,255,0.7);
 }
 
 /* Inputs */
 input[type="text"],
-input[type="number"] {
-  border: 1px inset #808080;
-  padding: 2px 4px;
-  font-size: 12px;
-  background-color: #ffffff;
-  margin: 4px 2px;
+input[type="number"],
+select{
   width: 100%;
-  max-width: 100%;
-  box-sizing: border-box; /* stay inside panel width */
-}
-
-/* Status / info blocks */
-#status {
-  margin-top: 6px;
-  padding: 4px;
-  background-color: #ffffe0; /* light yellow status area */
-  border: 1px solid #c0c000;
-  font-size: 12px;
-  min-height: 18px;
-}
-
-/* Per-section status messages (account/send/redeem) */
-.section-status {
-  margin-top: 6px;
-  padding: 4px;
-  background-color: #ffffe0; /* light yellow status area */
-  border: 1px solid #c0c000;
-  font-size: 12px;
-  min-height: 18px;          /* make visible even when empty */
   box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.30);
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+  margin-top: 2px;
+  margin-bottom: 12px;
 }
 
-/* Override the generic panel look for small status boxes */
-.section-status {
-  border-style: solid;
-  border-width: 1px;
+select{
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(233,236,245,0.75) 50%),
+    linear-gradient(135deg, rgba(233,236,245,0.75) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 36px;
 }
 
-#credits,
-#hashrate,
-#cooldown-countdown,
-#account-info,
-#address-info {
-  margin-top: 4px;
+select:hover{
+  border-color: rgba(34,211,238,0.35);
+}
+
+select:focus{
+  border-color: rgba(124,92,255,0.65);
+  box-shadow: 0 0 0 4px rgba(124,92,255,0.18);
+}
+
+/* Options list (best-effort; browser/OS dependent) */
+select option{
+  background: #0b0d14;
+  color: var(--text);
+}
+
+input::placeholder{ color: rgba(233,236,245,0.45); }
+
+input:focus,
+select:focus{
+  border-color: rgba(124,92,255,0.65);
+  box-shadow: 0 0 0 4px rgba(124,92,255,0.18);
+}
+
+label{
+  display:block;
+  margin: 10px 0 6px;
   font-size: 12px;
+  color: var(--muted2);
 }
 
-/* Small headings inside panels */
-h2 {
-  margin-top: 0;
-  font-size: 16px;
+/* Buttons */
+button{
+  cursor:pointer;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background:
+    linear-gradient(180deg, rgba(124,92,255,0.95), rgba(124,92,255,0.70));
+  color: white;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.2px;
+  box-shadow: 0 8px 18px rgba(124,92,255,0.20);
+  transition: transform .08s ease, box-shadow .15s ease, filter .15s ease;
+  min-width: 0;
+  margin: 10px 10px 0 0;
+  flex: 0 0 auto;
 }
 
-/* Mini title-bar style for panel headings */
-section h2,
-div h2 {
-  background-color: #000080;
-  color: #ffffff;
-  margin: -10px -10px 8px -10px; /* extend to panel edges */
-  padding: 4px 6px;
+button:hover{ filter: brightness(1.05); box-shadow: 0 10px 22px rgba(124,92,255,0.26); }
+button:active{ transform: translateY(1px); }
+button:disabled{ opacity:0.55; cursor:not-allowed; filter:saturate(0.4); }
+
+/* Secondary buttons (opt-in via class) */
+button.secondary{
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  box-shadow:none;
+}
+button.secondary:hover{ background: rgba(255,255,255,0.11); }
+
+/* Compact icon-only buttons (e.g. copy/clipboard) */
+.icon-button{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  box-shadow: none;
+  border: 1px solid rgba(255,255,255,0.12);
+  margin-top: 10px;
+}
+.icon-button:hover{
+  background: rgba(255,255,255,0.10);
+  filter: none;
+}
+.icon-button:active{
+  transform: translateY(1px);
+}
+
+/* PoW success feedback (glow pulse + highlight sweep) */
+@keyframes pow-success-pulse {
+  0%   { transform: translateY(0) scale(1);   box-shadow: var(--shadow); border-color: rgba(255,255,255,0.12); }
+  25%  { transform: translateY(-2px) scale(1.01);
+         box-shadow: 0 0 0 6px rgba(34,211,238,0.18), 0 22px 55px rgba(0,0,0,0.62);
+         border-color: rgba(34,211,238,0.55); }
+  55%  { transform: translateY(-1px) scale(1.01);
+         box-shadow: 0 0 0 8px rgba(124,92,255,0.20), 0 26px 70px rgba(0,0,0,0.66);
+         border-color: rgba(124,92,255,0.65); }
+  100% { transform: translateY(0) scale(1);   box-shadow: var(--shadow); border-color: rgba(255,255,255,0.12); }
+}
+
+@keyframes pow-success-overlay {
+  0%   { opacity: 0;   transform: translateX(-30%) rotate(-8deg); }
+  18%  { opacity: 0.55; }
+  55%  { opacity: 0.35; }
+  100% { opacity: 0;   transform: translateX(30%) rotate(-8deg); }
+}
+
+@keyframes pow-success-credits {
+  0%   { box-shadow: none; }
+  20%  { box-shadow: 0 0 0 5px rgba(124,92,255,0.22), 0 18px 44px rgba(124,92,255,0.18); }
+  60%  { box-shadow: 0 0 0 6px rgba(34,211,238,0.18), 0 18px 44px rgba(34,211,238,0.14); }
+  100% { box-shadow: none; }
+}
+
+/* Needed for overlay sweep */
+#status-panel{
+  position: relative;
+  overflow: hidden;
+}
+
+#status-panel::after{
+  content: "";
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(900px 220px at 20% 0%, rgba(34,211,238,0.22), transparent 60%),
+    radial-gradient(900px 220px at 80% 0%, rgba(124,92,255,0.22), transparent 60%),
+    linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.10) 30%, transparent 60%);
+}
+
+#status-panel.pow-success{
+  animation: pow-success-pulse 1.6s ease-in-out;
+}
+
+#status-panel.pow-success::after{
+  animation: pow-success-overlay 1.6s ease-out;
+}
+
+#status-panel.pow-success #credits{
+  animation: pow-success-credits 1.6s ease-out;
+}
+
+/* Status blocks */
+#status,
+.section-status{
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.32));
+  color: rgba(233,236,245,0.90);
+  min-height: 18px;
   font-size: 14px;
-  border-bottom: 1px solid #404040;
+  line-height: 1.35;
+  letter-spacing: 0.2px;
 }
 
-/* Labels inline, like old forms */
-label {
-  display: inline-block;
-  margin-top: 4px;
-  margin-right: 4px;
-  font-size: 12px;
+/* Optional semantic variants if these classes are added in JS later */
+.section-status.ok{ border-color: rgba(45,212,191,0.35); }
+.section-status.warn{ border-color: rgba(251,191,36,0.35); }
+.section-status.bad{ border-color: rgba(251,113,133,0.35); }
+
+/* Make mining stats feel less cramped (scope to the status panel only) */
+#status-panel #account-info,
+#status-panel #address-info{
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  font-size: 20px;
+  line-height: 1.35;
 }
 
-/* Make the page not stretch too tall visually */
-body {
-  min-height: 100vh;
+/* Each stat line becomes a pill row (status panel only) */
+#status-panel #credits,
+#status-panel #hashrate,
+#status-panel #cooldown-countdown{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
 }
 
-.ab-avatar {
-  width: 50px;
-  height: 50px;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-  display: inline-block;
-  vertical-align: middle;
+/* Make Credits the primary, most visible metric */
+#status-panel #credits{
+  background:
+    linear-gradient(180deg, rgba(124,92,255,0.14), rgba(255,255,255,0.04));
+  box-shadow: 0 10px 24px rgba(124,92,255,0.14);
+  font-weight: var(--fw-bold);
+  font-size: 22px;
+  letter-spacing: 0.2px;
 }
 
-body > p.about-link {
-  max-width: 800px;
+#status-panel #credits b{
+  font-weight: var(--fw-bold);
+  text-shadow: 0 2px 14px rgba(124,92,255,0.25);
+}
+
+/* Make the pickaxe clearly visible even on dark backgrounds */
+#status-panel #hashrate::before{
+  content: "⛏";
+  font-size: 1.15em;
+  opacity: 0.95;
+  filter: drop-shadow(0 2px 10px rgba(34,211,238,0.35));
+}
+
+/* Slight emphasis on the numbers (status panel only) */
+#status-panel #credits b,
+#status-panel #hashrate b{
+  color: rgba(233,236,245,0.98);
+}
+
+@media (max-width: 640px){
+  body{ padding: 18px 12px 34px; }
+  h1{ font-size: 20px; }
+  .dex-row{ flex-direction: column; }
+  .dex-actions{ justify-content:flex-start; }
+
+  #status-panel #account-info,
+  #status-panel #address-info{ font-size: 17px; }
+
+  #status-panel #credits{ font-size: 19px; }
+
+  #status-panel #credits,
+  #status-panel #hashrate,
+  #status-panel #cooldown-countdown{ padding: 9px 10px; }
+
+  /* Mobile: stack most buttons vertically */
+  button{
+    width: 100%;
+    margin: 12px 0 0 0;
+    display: block;
+  }
+
+  /* Keep DEX row action buttons compact */
+  .dex-actions button{
+    width: auto;
+    margin: 0;
+    display: inline-flex;
+  }
+
+  /* Keep icon-only buttons compact */
+  button.icon-button{
+    width: 40px;
+    display: inline-flex;
+  }
+
+  input[type="text"],
+  input[type="number"],
+  select{ margin-bottom: 14px; }
+}
+
+/* About link */
+body > p.about-link{
+  max-width: 980px;
   width: 100%;
-  margin: 4px auto 12px auto;
-  text-align: right;
+  margin: 6px auto 16px;
+  text-align:right;
 }
 
-.about-link a {
-  font-size: 0.9rem;
-  text-decoration: underline;
-}
-
-/* Small icon-style button for clipboard (Windows 95-like) */
-.icon-button {
-  min-width: 24px;
-  padding: 2px 4px;
-  font-size: 14px;
-  line-height: 1;
-  text-align: center;
-}
-
-/* Retro flash effect for successful PoW */
-@keyframes pow-success-flash {
-  0% {
-    background-color: #c0c0c0;
-  }
-  30% {
-    background-color: #b0ffb0; /* light green flash */
-  }
-  100% {
-    background-color: #c0c0c0;
-  }
-}
-
-#status-panel.pow-success {
-  animation: pow-success-flash 0.6s ease-out;
+/* Avatar */
+.ab-avatar{
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(0,0,0,0.25);
+  box-shadow: 0 10px 22px rgba(0,0,0,0.35);
 }
 
 /* ---------------------------
-   DEX UI (stacked cards)
+   DEX UI
    --------------------------- */
-.dex-grid {
-  display: flex;
+.dex-grid{
+  display:flex;
   flex-direction: column;
   gap: 12px;
   margin-top: 12px;
+}
+
+.dex-card{
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: rgba(0,0,0,0.22);
+  overflow: hidden; /* keep inner rows inside rounded card */
+  max-width: 100%;
+}
+
+.dex-row{
+  display:flex;
+  gap: 12px;
   align-items: stretch;
-}
-
-.dex-card {
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 10px;
-  padding: 12px;
-  background: rgba(0,0,0,0.20);
-  box-sizing: border-box;
-  position: relative;
-}
-
-/* Prevent the global `section, div { ... }` framing from affecting nested DEX layout divs */
-.dex-card div {
-  background-color: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
-  max-width: none;
-}
-
-.dex-card label {
-  display: block;
-  margin-top: 8px;
-  margin-bottom: 4px;
-  opacity: 0.9;
-}
-
-.dex-card input,
-.dex-card select {
+  justify-content: space-between;
   width: 100%;
-  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  margin: 0 0 10px 0;
+  background: rgba(255,255,255,0.04);
+  max-width: 100%;
+  min-width: 0; /* allow flex children to shrink */
 }
 
-.dex-mono {
+/* Ensure the left text area can wrap instead of pushing outside the card */
+.dex-row > div:first-child{
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 12px;
+}
+
+.dex-actions{
+  display:flex;
+  gap: 8px;
+  align-items:center;
+  justify-content:flex-end;
+  flex: 0 0 auto;
+}
+
+.dex-actions button{
+  width:auto;
+  padding: 8px 10px;
+  margin: 0;
+}
+
+.dex-actions button.dex-icon{
+  padding: 8px 10px;
+  margin: 0;
+}
+
+.dex-mono{
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
   line-height: 1.35;
   white-space: pre-wrap;
-  flex: 1 1 auto;
-  min-width: 0; /* allow wrapping instead of forcing overflow */
-}
-
-.dex-row {
-  display: flex;
-  gap: 10px;
-  align-items: stretch;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 8px;
-  margin: 0 0 10px 0; /* no auto-centering; use full card width */
-  background: rgba(0,0,0,0.18);
-  box-sizing: border-box;
-}
-
-.dex-actions {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-  margin: 0; /* override global div margins */
-}
-
-/* Make DEX action buttons size to their content (global buttons have min-width:110px) */
-.dex-actions button {
   min-width: 0;
-  width: auto;
-  padding: 6px 10px;
+  word-break: break-word;
 }
 
-/* Extra compact style for icon-only buttons (e.g. delete “x”) */
-.dex-actions button.dex-icon {
-  padding: 6px 8px;
+@media (max-width: 640px){
+  body{ padding: 18px 12px 34px; }
+  h1{ font-size: 20px; }
+  .dex-row{ flex-direction: column; }
+  .dex-actions{ justify-content:flex-start; }
 }
 
-/* --- DEX: clearer separation for trade rows (My trades) --- */
-#dex-my-trades .dex-row {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
-  padding: 10px 0;
-  margin: 0;
-  line-height: 1.35;
-}
-
-#dex-my-trades .dex-row:last-child {
-  border-bottom: none;
-}
-
-/* Keep some space between text block and the right-side action button */
-#dex-my-trades .dex-row > div:first-child {
-  padding-right: 12px;
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce){
+  *{ transition:none !important; animation:none !important; }
 }

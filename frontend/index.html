@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="stylesheet" href="styles.css">
   <title>Hashcash PoW Faucet</title>
   <style>
@@ -25,22 +26,34 @@
 
 <div id="info-section">
   <p>
-    Create an anonymous address and claim credit points by completing
+    Create an anonymous address and earn <strong>Credits</strong> by completing
     <a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style anti-spam Proof-of-Work tasks.
-    Credits can be sent to other accounts without fees. This tech demo also includes an experimental non-custodial P2P DEX to trade credits for VECO (other crypto currencies might be added later). VECO coins are paid directly to the other user; the server only watches the chain and updates trade status.
+    Credits can be sent to other accounts without fees.
   </p>
   <p>
-    The Web App also includes a simple redemption mechanism whereby burning credit points may result in small tips in one of the following supported cryptocurrencies:
+    You can <strong>redeem</strong> by burning Credits for small tips in supported cryptocurrencies.
+    An experimental, non-custodial <strong>P2P DEX</strong> also lets you trade Credits for <strong>VECO</strong> (more coins may be added later).
+  </p>
+  <p>
+    <strong>Redeem</strong> is available for the following crypto currencies:
   </p>
   <div id="supported-coins">
     <p>Loading supported coins…</p>
   </div>
-  To use the redeem and DEX features, you first need to mine an account once by solving a small Proof-of-Work puzzle. Depending on your hardware, this can take anywhere from minutes to hours.
+
+  <p style="margin-top:10px; opacity:0.85;">
+    To use <strong>Redeem</strong> and <strong>DEX</strong>, you first need to mine an account once by solving a small Proof-of-Work puzzle.
+    Depending on your hardware, this can take anywhere from minutes to hours.
+  </p>
+
   <p class="about-link"><a href="#about">Tell me more!</a></p>
 </div>
 
   <div id="signup-section">
     <button id="btn-signup">Signup (PoW)</button>
+    <button id="btn-stop-mining-signup" type="button" style="display:none; margin-left:10px;">Stop mining</button>
+    <div id="signup-status" class="section-status" style="margin-top:10px;"></div>
+    <div id="signup-hashrate" style="margin-top:8px; opacity:0.9; display:none;"></div>
     <div id="account-info"></div>
 
     <!-- If the final signup submit fails (network/proxy), allow retry without re-mining -->
@@ -52,6 +65,7 @@
 
   <div id="earn-section">
   <button id="btn-earn">Earn 1 credit (PoW)</button>
+    <button id="btn-stop-mining" type="button" style="display:none; margin-left:10px;">Stop mining</button>
     <div style="margin-top:6px;">
       <label>
         <input type="checkbox" id="auto-mine-checkbox">
@@ -70,7 +84,7 @@
   <hr>
 
   <div id="redeem-section">
-    <h2>Redeem / tips (experimental)</h2>
+    <h2>Redeem</h2>
     <p>
       To request a redeem, you must own at least
       <span id="min-redeem-credits">20</span> credits. Depending on the coin, each redeem request permanently
@@ -107,6 +121,8 @@
     ">No redeems yet.</div>
   </div>
 
+  <hr>
+
   <div id="account-section">
     <h2>Account management</h2>
     <p><strong>Warning:</strong> Your private key controls all your credits. Keep it safe and back it up.</p>
@@ -134,7 +150,7 @@
     <div id="send-status" class="section-status" style="margin-top:10px;"></div>
   </div>
 
-    <hr>
+  <hr>
 
   <hr>
 
@@ -227,6 +243,9 @@
       </li>
     </ul>
   </section>
+
+  <hr>
+
    <section id="disclaimer">
     <h2>Disclaimer</h2>
     <p>
@@ -525,9 +544,54 @@
     const powWorkerBlob = new Blob([powWorkerScript], { type: 'application/javascript' });
     const powWorkerUrl = URL.createObjectURL(powWorkerBlob);
     let powWorker = new Worker(powWorkerUrl);
+    // Allow canceling an active PoW by terminating the worker.
+    // (The worker loop is synchronous and cannot be interrupted otherwise.)
+    let activePowReject = null;
+    let activePowHandler = null;
+
+    function recreatePowWorker() {
+      try { powWorker.terminate(); } catch (e) {}
+      powWorker = new Worker(powWorkerUrl);
+    }
+
+    function stopMining(reason = "Mining stopped by user.") {
+      // Stop auto-mine if it is running
+      autoMineEnabled = false;
+      const cb = document.getElementById("auto-mine-checkbox");
+      if (cb) cb.checked = false;
+
+      // If a PoW is running, terminate worker and reject the pending promise
+      if (activePowReject) {
+        const rej = activePowReject;
+        activePowReject = null;
+        try {
+          if (activePowHandler) powWorker.removeEventListener("message", activePowHandler);
+        } catch (e) {}
+        activePowHandler = null;
+
+        recreatePowWorker();
+        rej(new Error(reason));
+      }
+
+      setMiningActive(false);
+      setStatus(reason);
+    }
+
+    function setStopButtonsVisible(visible) {
+      const ids = ["btn-stop-mining", "btn-stop-mining-signup"];
+      ids.forEach((id) => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = visible ? "" : "none";
+      });
+    }
 
     // Keep a short history of hashrate samples (for ~3s moving average)
     let hashrateSamples = [];
+
+    function resetHashrateUI() {
+      hashrateSamples = [];
+      setHashrate(null);
+    }
 
     function addHashrateSample(rate) {
       const now = performance.now() / 1000; // seconds
@@ -545,25 +609,53 @@
 
     function solvePow(message, bits) {
       return new Promise((resolve, reject) => {
+        // Register this promise as the active PoW so it can be canceled.
+        activePowReject = reject;
+
         const handler = (event) => {
           const { nonce, time, rate, done } = event.data;
           if (rate && isFinite(rate)) {
             addHashrateSample(rate);
           }
           if (done) {
-            powWorker.removeEventListener('message', handler);
+            try { powWorker.removeEventListener('message', handler); } catch (e) {}
+            activePowReject = null;
+            activePowHandler = null;
             resolve(String(nonce));
           }
         };
+
+        activePowHandler = handler;
         powWorker.addEventListener('message', handler);
         powWorker.postMessage({ message, bits });
       });
     }
 
-    let accountId = localStorage.getItem("account_id") || null;
-    let currentAddress = null;     // derived address from the backend
-    let serverTimeOffset = 0;     // server_time - local_time (seconds)
-    let lastCooldownUntil = 0;    // unix timestamp from backend
+let accountId = localStorage.getItem("account_id") || null;
+let currentAddress = null;     // derived address from the backend
+let serverTimeOffset = 0;     // server_time - local_time (seconds)
+let lastCooldownUntil = 0;    // unix timestamp from backend
+
+// UI: hide cooldown row while PoW is actively running, and only show it when cooldown is actually counting down.
+let miningActive = false;
+
+function setMiningActive(active) {
+  miningActive = !!active;
+
+  // When mining stops, hide any previously shown hashrate value.
+  if (!miningActive) {
+    resetHashrateUI();
+  }
+
+  setStopButtonsVisible(miningActive);
+
+  // Ensure the helper line under Signup updates immediately.
+  // (During signup PoW we want to hide the "No private key loaded..." text.)
+  setAccountInfo();
+
+  // Update cooldown row visibility immediately
+  updateCooldownCountdown();
+}
 
     function leadingZeroBits(bytes) {
       let bits = 0;
@@ -601,7 +693,15 @@
 
     // Earn/claim status (kept in the top status panel)
     function setStatus(msg) {
+      // Main status line (visible after account exists)
       setSectionStatus("status", msg);
+
+      // Before signup is completed, the main status panel is hidden.
+      // Mirror messages into the signup section so users still see progress.
+      if (!accountId) {
+        setSectionStatus("signup-status", msg);
+      }
+
       console.log(msg);
     }
 
@@ -623,11 +723,20 @@
 
     function setAccountInfo() {
       const el = document.getElementById("account-info");
+      if (!el) return;
+
       if (accountId) {
         el.textContent = "Private key is stored in this browser.";
-      } else {
-        el.textContent = "No private key loaded.";
+        return;
       }
+
+      // During signup PoW we show progress in the signup status box; this line is redundant.
+      if (miningActive) {
+        el.textContent = "";
+        return;
+      }
+
+      el.textContent = "No private key loaded. Perform signup PoW task or import private key.";
     }
 
     function setCredits(msg) {
@@ -636,15 +745,43 @@
 
     function setHashrate(hashesPerSecond) {
       const el = document.getElementById("hashrate");
-      if (!el) return;
-      if (!hashesPerSecond || !isFinite(hashesPerSecond)) {
-        el.textContent = "⛏️ Miner idle";
+      const signupEl = document.getElementById("signup-hashrate");
+
+      const hasRate = !!(hashesPerSecond && isFinite(hashesPerSecond));
+
+      // When we are not actively mining, hide both hashrate lines.
+      if (!hasRate) {
+        if (el) {
+          el.textContent = "";
+          el.style.display = "none";
+        }
+        if (signupEl) {
+          signupEl.textContent = "";
+          signupEl.style.display = "none";
+        }
         return;
       }
+
       const khs = hashesPerSecond / 1000;
-      el.textContent = "⛏️ Hashrate: " +
+      const txt = "Hashrate: " +
         khs.toLocaleString(undefined, { maximumFractionDigits: 1 }) +
         " kH/s";
+
+      // Normal (logged-in) display
+      if (el) {
+        el.style.display = "";
+        el.textContent = txt;
+      }
+
+      // Signup display (before account exists, the status panel is hidden)
+      if (!accountId && signupEl) {
+        signupEl.style.display = "";
+        signupEl.textContent = txt;
+      } else if (signupEl) {
+        // Once logged in, keep the signup hashrate hidden.
+        signupEl.textContent = "";
+        signupEl.style.display = "none";
+      }
     }
 
     // Helper to copy address to clipboard and show status
@@ -672,20 +809,27 @@
       }
     }
 
-    // Visual feedback for successful PoW (retro flash on the status panel)
+    // Visual feedback for successful PoW
+    let powSuccessTimer = null;
     function triggerPowSuccess() {
       const panel = document.getElementById("status-panel");
       if (!panel) return;
-      // Remove and re-add the class to restart the animation if it was already active
+
       panel.classList.remove("pow-success");
-      // Force reflow so the animation can restart
-      void panel.offsetWidth;
+      void panel.offsetWidth; // restart animation
       panel.classList.add("pow-success");
+
+      if (powSuccessTimer) clearTimeout(powSuccessTimer);
+      powSuccessTimer = setTimeout(() => {
+        panel.classList.remove("pow-success");
+        powSuccessTimer = null;
+      }, 1700);
     }
 
     function updateVisibility() {
       const signupSection = document.getElementById("signup-section");
       const earnSection = document.getElementById("earn-section");
+      const statusSection = document.getElementById("status-panel");
       const accountSection = document.getElementById("account-section");
       const sendSection = document.getElementById("send-section");
       const redeemSection = document.getElementById("redeem-section");
@@ -696,12 +840,14 @@
 
         if (accountId) {
         if (signupSection) signupSection.style.display = "none";
+        if (statusSection) statusSection.style.display = "";
         if (earnSection) earnSection.style.display = "";
         if (sendSection) sendSection.style.display = "";
         if (redeemSection) redeemSection.style.display = "";
         if (dexSection) dexSection.style.display = "";
       } else {
         if (signupSection) signupSection.style.display = "";
+        if (statusSection) statusSection.style.display = "none";
         if (earnSection) earnSection.style.display = "none";
         if (sendSection) sendSection.style.display = "none";
         if (redeemSection) redeemSection.style.display = "none";
@@ -713,22 +859,34 @@
       const el = document.getElementById("cooldown-countdown");
       if (!el) return;
 
+      // Default: hide the row unless we are actively counting down.
+      el.style.display = "none";
+      el.textContent = "";
+
       if (!accountId || !lastCooldownUntil) {
-        el.textContent = "";
+        return;
+      }
+
+      // While PoW is running, cooldown info is not useful.
+      if (miningActive) {
         return;
       }
 
       const nowLocal = Math.floor(Date.now() / 1000);
       const serverNow = nowLocal + serverTimeOffset;
-      let remaining = lastCooldownUntil - serverNow;
+      const remaining = lastCooldownUntil - serverNow;
 
+      // If ready (or negative), keep hidden.
       if (remaining <= 0) {
-        el.textContent = "Cooldown: ready";
         return;
       }
 
+      // hide hashrate while cooldown is running
+      resetHashrateUI();
+
       const minutes = Math.floor(remaining / 60);
       const seconds = remaining % 60;
+      el.style.display = "";
       el.textContent = `Cooldown remaining: ${minutes}m ${seconds}s`;
     }
 
@@ -769,7 +927,19 @@
       const rounded = Math.floor(ts / 60) * 60;
       const msg = `signup|ts=${rounded}|cn=${clientNonce}`;
 
-      const powNonce = await solvePow(msg, bits);
+      setMiningActive(true);
+      let powNonce;
+      try {
+        powNonce = await solvePow(msg, bits);
+      } catch (e) {
+        if (String(e || "").toLowerCase().includes("mining stopped")) {
+          // User canceled
+          return;
+        }
+        throw e;
+      } finally {
+        setMiningActive(false);
+      }
 
       const payload = {
         client_nonce: clientNonce,
@@ -857,7 +1027,19 @@
       const sig = ch.sig;
 
       setStatus(`Running claim PoW (bits=${bits})...`);
-      const nonce = await solvePow(stamp, bits);
+      setMiningActive(true);
+      let nonce;
+      try {
+        nonce = await solvePow(stamp, bits);
+      } catch (e) {
+        if (String(e || "").toLowerCase().includes("mining stopped")) {
+          // User canceled
+          return;
+        }
+        throw e;
+      } finally {
+        setMiningActive(false);
+      }
 
       const resSub = await fetch(`${BASE_URL}/submit_pow`, {
         method: "POST",
@@ -936,6 +1118,7 @@
       if (!accountId) {
         setAccountInfo();
         setCredits("");
+        resetHashrateUI();
         lastCooldownUntil = 0;
         updateCooldownCountdown();
         updateVisibility();
@@ -1561,6 +1744,16 @@ async function cancelDexOrder(orderId) {
       });
     });
 
+    const stopBtn1 = document.getElementById("btn-stop-mining");
+    if (stopBtn1) {
+      stopBtn1.addEventListener("click", () => stopMining("Mining stopped."));
+    }
+
+    const stopBtn2 = document.getElementById("btn-stop-mining-signup");
+    if (stopBtn2) {
+      stopBtn2.addEventListener("click", () => stopMining("Mining stopped."));
+    }
+
     const retryBtn = document.getElementById("btn-signup-retry");
     if (retryBtn) {
       retryBtn.addEventListener("click", () => {
@@ -1660,6 +1853,19 @@ async function cancelDexOrder(orderId) {
     });
 
     document.getElementById("btn-clear").addEventListener("click", () => {
+      // Safety confirmation: clearing the local private key cannot be undone.
+      // If the user has not backed up the key, all credits tied to it are effectively lost.
+      const ok = window.confirm(
+        "Delete the locally stored private key from this browser?\n\n" +
+        "This action cannot be undone. If you have NOT exported/backed up your private key, you may permanently lose access to your Credits.\n\n" +
+        "Click OK to delete, or Cancel to keep it."
+      );
+
+      if (!ok) {
+        setAccountStatus("Clear canceled. Local private key was NOT deleted.");
+        return;
+      }
+
       accountId = null;
       localStorage.removeItem("account_id");
       currentAddress = null;
