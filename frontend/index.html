@@ -571,6 +571,20 @@
 
         recreatePowWorker();
         rej(new Error(reason));
+
+        // IMPORTANT: Release the server-side IP lock for claim-PoW immediately.
+        // Otherwise the IP stays blocked until STAMP_TTL_SEC expires.
+        // (Signup PoW does not use the /challenge IP lock, but this call is harmless.)
+        if (accountId) {
+          fetch(`${BASE_URL}/cancel_pow`, {
+            method: "POST",
+            headers: {
+              "Authorization": "Bearer " + accountId,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({}),
+          }).catch(() => {});
+        }
       }
 
       setMiningActive(false);
@@ -639,11 +653,17 @@ let lastCooldownUntil = 0;    // unix timestamp from backend
 // UI: hide cooldown row while PoW is actively running, and only show it when cooldown is actually counting down.
 let miningActive = false;
 
+// Track the currently running PoW difficulty so we can show an ETA next to the hashrate.
+let currentPowBits = null;   // e.g. 26
+let currentPowMode = "";     // "signup" | "claim" | ""
+
 function setMiningActive(active) {
   miningActive = !!active;
 
-  // When mining stops, hide any previously shown hashrate value.
+  // When mining stops, hide any previously shown hashrate value and clear the current PoW context.
   if (!miningActive) {
+    currentPowBits = null;
+    currentPowMode = "";
     resetHashrateUI();
   }
 
@@ -763,9 +783,23 @@ function setMiningActive(active) {
       }
 
       const khs = hashesPerSecond / 1000;
+
+      // Expected time to a valid hit for leading-zero-bits PoW is ~ 2^bits / hashrate.
+      // (Exponential distribution; this is the mean.)
+      let etaSuffix = "";
+      if (currentPowBits && Number.isFinite(currentPowBits) && currentPowBits > 0) {
+        const expectedHashes = Math.pow(2, currentPowBits);
+        const expectedSeconds = expectedHashes / hashesPerSecond;
+        if (Number.isFinite(expectedSeconds) && expectedSeconds > 0) {
+          const eta = formatDurationHMS(expectedSeconds);
+          etaSuffix = ` · avg hit: ~${eta}`;
+        }
+      }
+
       const txt = "Hashrate: " +
         khs.toLocaleString(undefined, { maximumFractionDigits: 1 }) +
-        " kH/s";
+        " kH/s" +
+        etaSuffix;
 
       // Normal (logged-in) display
       if (el) {
@@ -927,6 +961,8 @@ function setMiningActive(active) {
       const rounded = Math.floor(ts / 60) * 60;
       const msg = `signup|ts=${rounded}|cn=${clientNonce}`;
 
+      currentPowBits = bits;
+      currentPowMode = "signup";
       setMiningActive(true);
       let powNonce;
       try {
@@ -1027,6 +1063,8 @@ function setMiningActive(active) {
       const sig = ch.sig;
 
       setStatus(`Running claim PoW (bits=${bits})...`);
+      currentPowBits = bits;
+      currentPowMode = "claim";
       setMiningActive(true);
       let nonce;
       try {

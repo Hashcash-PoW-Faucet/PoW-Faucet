@@ -968,6 +968,22 @@ def submit_pow(data: SubmitPowIn, req: Request):
         IP_LOCKS.release(ipt, account_id)
 
 
+# New endpoint: /cancel_pow
+@app.post("/cancel_pow")
+def cancel_pow(req: Request):
+    """Release the current IP mining lock for this account (best-effort).
+
+    Useful when the user cancels mining client-side and will not submit a PoW,
+    which would otherwise keep the IP lock until STAMP_TTL_SEC expires.
+
+    NOTE: This is in-memory and only works within the same backend process.
+    """
+    account_id = auth_account(req)
+    ipt = ip_tag(get_client_ip(req))
+    IP_LOCKS.release(ipt, account_id)
+    return {"ok": True}
+
+
 #
 # ---------------------------
 # /config endpoint: Public PoW & faucet parameters
