@@ -246,7 +246,12 @@ button{
   transition: transform .08s ease, box-shadow .15s ease, filter .15s ease;
   min-width: 0;
   margin: 10px 10px 0 0;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  white-space: normal;
 }
 
 button:hover{ filter: brightness(1.05); box-shadow: 0 10px 22px rgba(124,92,255,0.26); }
@@ -435,11 +440,18 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
     display: block;
   }
 
-  /* Keep DEX row action buttons compact */
+  /* Mobile: stack action buttons too (prevents overflow in narrow cards) */
+  .dex-actions{
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
   .dex-actions button{
-    width: auto;
+    width: 100%;
     margin: 0;
-    display: inline-flex;
+    display: block;
   }
 
   /* Keep icon-only buttons compact */
@@ -518,12 +530,15 @@ body > p.about-link{
   align-items:center;
   justify-content:flex-end;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .dex-actions button{
   width:auto;
   padding: 8px 10px;
   margin: 0;
+  max-width: 100%;
 }
 
 .dex-actions button.dex-icon{
@@ -550,4 +565,68 @@ body > p.about-link{
 /* Respect reduced motion */
 @media (prefers-reduced-motion: reduce){
   *{ transition:none !important; animation:none !important; }
+}
+
+/* --- Mobile layout fixes: keep buttons inside cards and avoid horizontal overflow --- */
+.button-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.button-row button {
+  flex: 1 1 180px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.header-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.header-row h3 {
+  flex: 0 0 auto;
+}
+
+.header-row small {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.header-row button {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+@media (max-width: 640px) {
+  .button-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button-row button {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .header-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-row button {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .header-row small {
+    width: 100%;
+    flex: 0 0 auto;
+  }
 }

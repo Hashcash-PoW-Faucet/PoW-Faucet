@@ -50,8 +50,10 @@
 </div>
 
   <div id="signup-section">
-    <button id="btn-signup">Signup (PoW)</button>
-    <button id="btn-stop-mining-signup" type="button" style="display:none; margin-left:10px;">Stop mining</button>
+    <div class="button-row">
+      <button id="btn-signup">Signup (PoW)</button>
+      <button id="btn-stop-mining-signup" type="button" style="display:none;">Stop mining</button>
+    </div>
     <div id="signup-status" class="section-status" style="margin-top:10px;"></div>
     <div id="signup-hashrate" style="margin-top:8px; opacity:0.9; display:none;"></div>
     <div id="account-info"></div>
@@ -64,8 +66,10 @@
   <hr>
 
   <div id="earn-section">
-  <button id="btn-earn">Earn 1 credit (PoW)</button>
-    <button id="btn-stop-mining" type="button" style="display:none; margin-left:10px;">Stop mining</button>
+  <div class="button-row">
+    <button id="btn-earn">Earn 1 credit (PoW)</button>
+    <button id="btn-stop-mining" type="button" style="display:none;">Stop mining</button>
+  </div>
     <div style="margin-top:6px;">
       <label>
         <input type="checkbox" id="auto-mine-checkbox">
@@ -103,9 +107,9 @@
     <div id="redeem-status" class="section-status" style="margin-top:10px;"></div>
 
     <h3 style="margin-top: 18px;">Redeem log</h3>
-    <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+    <div class="header-row" style="margin-bottom:8px;">
       <small style="opacity:0.8;">Shows the last 10 redeem requests from the server audit queue (public faucet log).</small>
-      <button id="btn-clear-redeem-log" type="button" style="margin-left:auto;">Refresh</button>
+      <button id="btn-clear-redeem-log" type="button">Refresh</button>
     </div>
     <div id="redeem-log" style="
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
@@ -203,9 +207,9 @@
 
       <!-- Card 3: My trades -->
       <div class="dex-card">
-        <div style="display:flex; align-items:center; gap:10px;">
+        <div class="header-row">
           <h3 style="margin-top:0; margin-bottom:0;">My trades</h3>
-          <button id="btn-dex-refresh" type="button" style="margin-left:auto;">Refresh</button>
+          <button id="btn-dex-refresh" type="button">Refresh</button>
         </div>
         <small style="opacity:0.8;">Shows confirmations progress (confs / required) until settlement.</small>
         <div style="margin-top:10px;" id="dex-my-trades" class="dex-mono">Loading…</div>
