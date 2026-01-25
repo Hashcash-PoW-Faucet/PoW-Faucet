@@ -254,21 +254,24 @@ def is_valid_address(currency: str, addr: str) -> bool:
     return False
 
 
-def maybe_send_tip(currency: str, tip_address: str) -> tuple[float, Optional[str], Optional[str]]:
+def maybe_send_tip(currency: str, tip_address: str) -> tuple[float, Optional[str], Optional[str], bool]:
     """
     Attempt to send a discretionary crypto tip for the given currency and address.
 
-    Returns (amount, txid, rpc_error):
+    Returns (amount, txid, rpc_error, safe_to_unlock):
     - amount == 0.0 and txid is None if no tip was sent.
     - rpc_error is a short diagnostic string (best-effort) that explains why a tip was not sent
       when a coin config exists (e.g. "insufficient faucet balance", "RPC error: ...").
+    - safe_to_unlock indicates whether it is safe to unlock previously locked credits because
+      we can be sure that no coins left the faucet wallet for this attempt.
 
     This function makes no guarantees and is best-effort only.
     """
     cfg = COINS_CONFIG.get(currency)
     if not cfg:
         # No RPC/tip config → no on-chain tip, just record the redeem.
-        return 0.0, None, None
+        # Safe to unlock credits, since we will never attempt to send coins.
+        return 0.0, None, None, True
 
     # Parse min/max tip from config (strings or numbers).
     try:
@@ -282,7 +285,7 @@ def maybe_send_tip(currency: str, tip_address: str) -> tuple[float, Optional[str
 
     if max_tip <= 0:
         # Tipping disabled or misconfigured.
-        return 0.0, None, "tipping disabled or misconfigured (max_tip <= 0)"
+        return 0.0, None, "tipping disabled or misconfigured (max_tip <= 0)", True
 
     if min_tip < 0:
         min_tip = 0.0
@@ -295,29 +298,43 @@ def maybe_send_tip(currency: str, tip_address: str) -> tuple[float, Optional[str
     # Round to 8 decimal places to be friendly to Bitcoin-like RPCs.
     amount = float(f"{amount:.8f}")
     if amount <= 0:
-        return 0.0, None, "computed tip amount <= 0"
+        return 0.0, None, "computed tip amount <= 0", True
 
+    # Step 1: check wallet balance first (best-effort). Any error here is guaranteed to happen
+    # before any attempt to send coins, so it is safe to unlock credits again.
     try:
-        # Check wallet balance first (best-effort).
         bal = call_coin_rpc(currency, "getbalance")
-        if isinstance(bal, str):
-            bal = float(bal)
-        if not isinstance(bal, (int, float)):
-            return 0.0, None, f"unexpected getbalance result type: {type(bal).__name__}"
-        if bal < amount:
-            return 0.0, None, f"insufficient faucet balance (balance={bal}, needed={amount})"
-
-        txid = call_coin_rpc(currency, "sendtoaddress", [tip_address, amount])
-        if not isinstance(txid, str):
-            txid = str(txid)
-        return amount, txid, None
     except Exception as e:
-        # Any RPC error is treated as "no tip sent"; caller can still record the redeem.
-        # Keep error short to avoid leaking details.
         msg = str(e)
         if len(msg) > 300:
             msg = msg[:300] + "..."
-        return 0.0, None, f"RPC error: {type(e).__name__}: {msg}"
+        return 0.0, None, f"RPC error (getbalance): {type(e).__name__}: {msg}", True
+
+    if isinstance(bal, str):
+        try:
+            bal = float(bal)
+        except ValueError:
+            return 0.0, None, "unexpected getbalance result string", True
+
+    if not isinstance(bal, (int, float)):
+        return 0.0, None, f"unexpected getbalance result type: {type(bal).__name__}", True
+
+    if bal < amount:
+        return 0.0, None, f"insufficient faucet balance (balance={bal}, needed={amount})", True
+
+    # Step 2: attempt to send coins. Any error here is ambiguous: coins may or may not have left
+    # the wallet (e.g. timeout after broadcast). To protect the faucet, we must *not* unlock
+    # credits in this case.
+    try:
+        txid = call_coin_rpc(currency, "sendtoaddress", [tip_address, amount])
+        if not isinstance(txid, str):
+            txid = str(txid)
+        return amount, txid, None, False
+    except Exception as e:
+        msg = str(e)
+        if len(msg) > 300:
+            msg = msg[:300] + "..."
+        return 0.0, None, f"RPC error (sendtoaddress): {type(e).__name__}: {msg}", False
 
 
 def enqueue_redeem_request(
@@ -786,6 +803,8 @@ class RedeemLogEntryOut(BaseModel):
     tip_amount: TypingOptional[float] = None
     txid: TypingOptional[str] = None
     rpc_error: TypingOptional[str] = None
+    state: TypingOptional[str] = None
+    note: TypingOptional[str] = None
 
 
 # Config model for public API
@@ -1202,6 +1221,29 @@ def _unlock_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int
         raise ValueError("insufficient locked credits or unknown account")
 
 
+# Burn locked credits helper for redeem finalization
+def _burn_locked_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int) -> None:
+    """Permanently burn `amount` credits from `account_id.locked_credits`.
+
+    Used for finalizing redeems after a successful on-chain tip.
+    Raises ValueError on failure.
+    """
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    cur = con.execute(
+        """
+        UPDATE accounts
+        SET locked_credits = locked_credits - ?
+        WHERE account_id = ?
+          AND locked_credits >= ?
+        """,
+        (amount, str(account_id), amount),
+    )
+    if cur.rowcount != 1:
+        raise ValueError("insufficient locked credits or unknown account")
+
+
 def _transfer_locked_credits_atomic(
     con: sqlite3.Connection,
     from_account_id: str,
@@ -1403,57 +1445,81 @@ def redeem_log(req: Request, limit: int = 10, all: bool = False):
     parsed.sort(key=lambda x: (int(x.get("created_at", 0) or 0), int(x.get("id", 0) or 0)))
     parsed = parsed[-limit:]
 
-    out: list[RedeemLogEntryOut] = []
-    for e in parsed:
-        try:
-            rid = int(e.get("id", 0) or 0)
-        except Exception:
-            rid = 0
-        try:
-            ts = int(e.get("created_at", 0) or 0)
-        except Exception:
-            ts = 0
-        cur = str(e.get("currency", "") or "")
-        acc = str(e.get("account_id", "") or "")
-        txid = e.get("txid")
-        if txid is not None:
-            txid = str(txid)
-        rpc_error = e.get("rpc_error")
-        if rpc_error is not None:
-            rpc_error = str(rpc_error)
-        tip_amount = e.get("tip_amount")
-        try:
-            tip_amount_f = float(tip_amount) if tip_amount is not None else None
-        except Exception:
-            tip_amount_f = None
+    con = db()
+    try:
+        out: list[RedeemLogEntryOut] = []
+        for e in parsed:
+            try:
+                rid = int(e.get("id", 0) or 0)
+            except Exception:
+                rid = 0
+            try:
+                ts = int(e.get("created_at", 0) or 0)
+            except Exception:
+                ts = 0
+            cur = str(e.get("currency", "") or "")
+            acc = str(e.get("account_id", "") or "")
+            txid = e.get("txid")
+            if txid is not None:
+                txid = str(txid)
+            rpc_error = e.get("rpc_error")
+            if rpc_error is not None:
+                rpc_error = str(rpc_error)
+            tip_amount = e.get("tip_amount")
+            try:
+                tip_amount_f = float(tip_amount) if tip_amount is not None else None
+            except Exception:
+                tip_amount_f = None
 
-        out.append(RedeemLogEntryOut(
-            request_id=rid,
-            ts=ts,
-            account_id=acc,
-            currency=cur,
-            tip_amount=tip_amount_f,
-            txid=txid,
-            rpc_error=rpc_error,
-        ))
+            # Look up the current state/note from the redeem_requests table (best-effort).
+            state = None
+            note = None
+            if rid > 0:
+                try:
+                    row = con.execute(
+                        "SELECT state, note FROM redeem_requests WHERE id=?",
+                        (rid,),
+                    ).fetchone()
+                    if row:
+                        state = str(row[0]) if row[0] is not None else None
+                        note = str(row[1]) if row[1] is not None else None
+                except Exception:
+                    # Log lookup is best-effort; ignore DB errors here.
+                    pass
 
-    return out
+            out.append(RedeemLogEntryOut(
+                request_id=rid,
+                ts=ts,
+                account_id=acc,
+                currency=cur,
+                tip_amount=tip_amount_f,
+                txid=txid,
+                rpc_error=rpc_error,
+                state=state,
+                note=note,
+            ))
+
+        return out
+    finally:
+        con.close()
 
 # ---------------------------
 # /redeem_request endpoint: Ask for an external crypto tip
 # ---------------------------
+
+# New redeem_request implementation: lock credits, burn on tip, unlock if no payout
 @app.post("/redeem_request", response_model=RedeemRequestOut)
 def redeem_request(data: RedeemRequestIn, req: Request):
-    """
-    Log a redeem/tip request and optionally send a best-effort crypto tip.
+    """Log a redeem/tip request and optionally send a best-effort crypto tip.
 
-    This does NOT guarantee any payout or fixed exchange rate.
-    The endpoint:
-    - checks that the user has at least MIN_REDEEM_CREDITS,
-    - deducts REDEEM_COST_CREDITS from their balance,
-    - records the request in the redeem_requests table,
-    - and, if configured and funded, attempts to send a discretionary on-chain tip
-      via JSON-RPC from the faucet operator's own funds.
+    New behavior:
+    - First move the redeem cost from `credits` -> `locked_credits` atomically.
+    - Only if an on-chain tip is successfully sent, the locked credits are permanently burned.
+    - If no tip is sent (RPC error, empty faucet wallet, etc.), the locked credits are returned
+      to the user's available balance.
+
+    This still does NOT guarantee any payout or fixed exchange rate, but avoids the case where
+    credits are permanently deducted without any chance of a payout.
     """
     account_id = auth_account(req)
     tip_address = data.tip_address.strip()
@@ -1467,19 +1533,29 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         raise HTTPException(status_code=400, detail=f"invalid address for currency {currency}")
 
     con = db()
+    request_id: int | None = None
+    credits_before: int = 0
+    cost: int = 0
+    tip_amount: float = 0.0
+    txid: str | None = None
+    rpc_error: str | None = None
+    final_state: str = "locked"
+    note: str | None = None
+
     try:
         ts = now_unix()
+        # Phase 1: lock credits and record the redeem request.
         con.execute("BEGIN IMMEDIATE;")
 
         row = con.execute(
             "SELECT credits FROM accounts WHERE account_id=?",
-            (account_id,)
+            (account_id,),
         ).fetchone()
         if not row:
             con.execute("ROLLBACK;")
             raise HTTPException(status_code=401, detail="unknown account")
 
-        credits_before = row[0]
+        credits_before = int(row[0] or 0)
         if credits_before < MIN_REDEEM_CREDITS:
             con.execute("ROLLBACK;")
             msg = (
@@ -1488,53 +1564,95 @@ def redeem_request(data: RedeemRequestIn, req: Request):
             )
             raise HTTPException(status_code=400, detail=msg)
 
-        # Deduct the redeem cost (bounded so we never go negative)
+        # Determine how many credits to lock for this redeem attempt.
         cost = min(REDEEM_COST_CREDITS, credits_before)
-        credits_after = credits_before - cost
+        if cost <= 0:
+            con.execute("ROLLBACK;")
+            raise HTTPException(status_code=400, detail="redeem cost must be positive")
 
-        con.execute(
-            "UPDATE accounts SET credits=? WHERE account_id=?",
-            (credits_after, account_id),
-        )
+        # Move `cost` credits -> locked_credits atomically.
+        try:
+            _lock_credits_atomic(con, account_id, cost)
+        except ValueError as e:
+            con.execute("ROLLBACK;")
+            raise HTTPException(status_code=400, detail=str(e))
 
+        # Insert redeem request in 'locked' state.
         cur = con.execute(
             """
-            INSERT INTO redeem_requests(created_at, account_id, tip_address, currency, credits_before, credits_spent, state, note)
-            VALUES(?,?,?,?,?,?,?,?)
+            INSERT INTO redeem_requests(
+              created_at, account_id, tip_address, currency,
+              credits_before, credits_spent, state, note
+            ) VALUES(?,?,?,?,?,?,?,?)
             """,
-            (ts, account_id, tip_address, currency, credits_before, cost, "pending", None),
+            (ts, account_id, tip_address, currency, credits_before, cost, "locked", None),
         )
-        request_id = cur.lastrowid
+        request_id = int(cur.lastrowid)
 
-        # Commit the credit deduction and the recorded request before attempting any RPC calls.
+        # Commit Phase 1: credits are now locked and the request is recorded.
         con.execute("COMMIT;")
 
-        # Best-effort attempt to send an on-chain tip via RPC, based on the coin config.
-        tip_amount, txid, rpc_error = maybe_send_tip(currency, tip_address)
+        # Phase 2: attempt to send on-chain tip (best-effort, outside the credit-locking txn).
+        tip_amount, txid, rpc_error, safe_to_unlock = maybe_send_tip(currency, tip_address)
 
-        # Update the redeem_requests row with the outcome.
-        state = "pending"
-        note = None
+        # Phase 3: finalize according to tip outcome.
         if tip_amount > 0 and txid:
-            state = "sent"
+            # Successful tip: burn the locked credits and mark as sent.
+            final_state = "sent"
             note = f"{currency} {tip_amount} txid={txid}"
-        elif COINS_CONFIG.get(currency):
-            # We had a coin config but no tip could be sent this time; keep the reason for diagnosis
-            note = rpc_error or "no tip sent (faucet funds or RPC conditions not met)"
-
-        # Use a new transaction for the state update (best-effort).
-        try:
-            con.execute("BEGIN IMMEDIATE;")
-            con.execute(
-                "UPDATE redeem_requests SET state=?, note=? WHERE id=?",
-                (state, note, request_id),
-            )
-            con.execute("COMMIT;")
-        except Exception:
             try:
-                con.execute("ROLLBACK;")
+                con.execute("BEGIN IMMEDIATE;")
+                _burn_locked_credits_atomic(con, account_id, cost)
+                con.execute(
+                    "UPDATE redeem_requests SET state=?, note=? WHERE id=?",
+                    (final_state, note, request_id),
+                )
+                con.execute("COMMIT;")
             except Exception:
-                pass
+                # If this fails, credits remain locked; better to leave them frozen than silently
+                # re-credit them after coins were sent.
+                try:
+                    con.execute("ROLLBACK;")
+                except Exception:
+                    pass
+        else:
+            # No tip was sent: best-effort attempt to unlock credits again *only* if we are sure
+            # that no coins left the faucet wallet. If the RPC state is ambiguous (e.g. a timeout
+            # after sendtoaddress), we keep the credits locked to avoid draining the faucet.
+            final_state = "no_payout"
+            if COINS_CONFIG.get(currency):
+                note = rpc_error or "no tip sent (faucet funds or RPC conditions not met)"
+            else:
+                note = "no on-chain tip configured for this currency"
+
+            try:
+                con.execute("BEGIN IMMEDIATE;")
+                if safe_to_unlock:
+                    try:
+                        _unlock_credits_atomic(con, account_id, cost)
+                    except ValueError as e:
+                        # If unlocking fails, keep them locked and annotate the note for later manual fix.
+                        note = (note or "") + f" [unlock_failed: {e}]"
+                else:
+                    # Ambiguous RPC state: credits stay locked for safety.
+                    note = (note or "") + " [credits remain locked due to uncertain RPC state]"
+                con.execute(
+                    "UPDATE redeem_requests SET state=?, note=? WHERE id=?",
+                    (final_state, note, request_id),
+                )
+                con.execute("COMMIT;")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK;")
+                except Exception:
+                    pass
+
+        # Fetch final visible credits for the response.
+        row_final = con.execute(
+            "SELECT credits FROM accounts WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
+        credits_left = int(row_final[0] or 0) if row_final else 0
 
         # Log this redeem request and outcome to the JSONL queue/audit file.
         enqueue_redeem_request(
@@ -1564,7 +1682,7 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         return RedeemRequestOut(
             ok=True,
             message=message,
-            credits_left=credits_after,
+            credits_left=credits_left,
             min_credits=MIN_REDEEM_CREDITS,
             currency=currency,
             tip_amount=tip_amount if tip_amount > 0 else None,
@@ -1572,7 +1690,6 @@ def redeem_request(data: RedeemRequestIn, req: Request):
             rpc_error=rpc_error,
         )
     except HTTPException:
-        # Rollback already done or we are about to return an error
         raise
     except Exception:
         try:
