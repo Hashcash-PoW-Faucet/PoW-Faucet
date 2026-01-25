@@ -413,8 +413,40 @@ def ip_tag(ip: str) -> str:
 
 
 def get_client_ip(req: Request) -> str:
-    # NOTE: If behind a reverse proxy, DO NOT trust X-Forwarded-For unless you control it.
-    return req.client.host
+    """Best-effort client IP extraction.
+
+    We only trust proxy headers when the immediate peer is a trusted proxy.
+    Typically, the backend is reached via a reverse proxy / WireGuard hop,
+    so `req.client.host` may be a local/WG address (e.g., 127.0.0.1 or 10.8.0.1).
+
+    Configure additional trusted proxies via TRUSTED_PROXY_IPS (comma-separated).
+    """
+    peer = (req.client.host or "").strip()
+
+    trusted = {"127.0.0.1", "::1", "10.8.0.1"}
+    extra = (os.getenv("TRUSTED_PROXY_IPS") or "").strip()
+    if extra:
+        for part in extra.split(","):
+            part = part.strip()
+            if part:
+                trusted.add(part)
+
+    # Only trust forwarded headers from known reverse proxies.
+    if peer in trusted:
+        # Prefer X-Real-IP (your VPS Nginx sets this correctly).
+        xri = (req.headers.get("x-real-ip") or "").strip()
+        if xri:
+            return xri
+
+        # Fall back to the first entry in X-Forwarded-For.
+        xff = (req.headers.get("x-forwarded-for") or "").strip()
+        if xff:
+            # XFF can be a comma-separated chain: client, proxy1, proxy2...
+            first = xff.split(",", 1)[0].strip()
+            if first:
+                return first
+
+    return peer
 
 
 # ---------------------------
@@ -1556,3 +1588,13 @@ def redeem_request(data: RedeemRequestIn, req: Request):
 def admin_ping(req: Request):
     require_admin(req)
     return {"ok": True}
+
+
+@app.get("/debug/ip")
+def debug_ip(req: Request):
+    return {
+        "client_host": req.client.host,
+        "x_real_ip": req.headers.get("x-real-ip"),
+        "x_forwarded_for": req.headers.get("x-forwarded-for"),
+        "forwarded": req.headers.get("forwarded"),
+    }
