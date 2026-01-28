@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="stylesheet" href="styles.css">
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.webmanifest">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
   <title>Hashcash PoW Faucet</title>
   <style>
     /* DEX: stack cards vertically (no columns) */
@@ -96,8 +102,7 @@
     <h2>Redeem</h2>
     <p>
       To request a redeem, you must own at least
-      <span id="min-redeem-credits">20</span> credits. Depending on the coin, each redeem request permanently
-      burns a fixed number of credits (e.g. 10) from your balance, even if no tip is sent.
+      <span id="min-redeem-credits">20</span> credits. Each redeem temporarily locks a fixed number of credits from your balance. If a tip is sent, those locked credits are burned; if no payout happens (for example because the faucet wallet is empty), the locked credits are unlocked again.
     </p>
     <label for="redeem-address">Tip address:</label>
     <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
@@ -413,7 +418,14 @@
           const cur = e.currency ?? "-";
           const amt = (e.tip_amount === 0 || e.tip_amount) ? String(e.tip_amount) : "-";
           const tx = e.txid ?? "-";
-          return `request_id=${req}\nts=${ts}\naccount_id=${acc}\ncurrency=${cur}\ntip_amount=${amt}\ntxid=${tx}\n---`;
+          const state = e.state ?? "-";
+          const note = e.note ?? "";
+          let out = `request_id=${req}\nts=${ts}\naccount_id=${acc}\ncurrency=${cur}\ntip_amount=${amt}\ntxid=${tx}\nstate=${state}`;
+          if (note) {
+            out += `\nnote=${note}`;
+          }
+          out += `\n---`;
+          return out;
         });
 
       el.textContent = lines.join("\n");
@@ -2035,9 +2047,18 @@ async function cancelDexOrder(orderId) {
               extra = ` Tip sent: ${data.tip_amount} ${data.currency}, txid: ${data.txid}.`;
             }
 
+            let stateInfo = "";
+            if (data.state) {
+              stateInfo += ` State: ${data.state}.`;
+            }
+            if (data.note) {
+              stateInfo += ` ${data.note}`;
+            }
+
             setRedeemStatus(
               data.message +
               extra +
+              stateInfo +
               " Credits left: " + data.credits_left +
               ". Minimum required: " + data.min_credits + "."
             );
@@ -2137,6 +2158,16 @@ async function cancelDexOrder(orderId) {
       console.error("Error during initial config load:", err);
       refreshAccount();
     });
+  </script>
+  <script>
+    // PWA: register service worker (safe no-op on unsupported browsers)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((err) => {
+          console.error('Service worker registration failed:', err);
+        });
+      });
+    }
   </script>
   <hr>
   </body>
