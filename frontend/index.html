@@ -4,6 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Mobile: hide the desktop status panel (we already have the sticky top bar) */
+    @media (max-width: 640px){
+      #status-panel,
+      #status-panel + hr{
+        display: none !important;
+      }
+    }
+  </style>
   <!-- PWA -->
   <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#111827">
@@ -11,34 +20,53 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
   <title>Hashcash PoW Faucet</title>
-  <style>
-    /* DEX: stack cards vertically (no columns) */
-    .dex-grid {
-      display: flex !important;
-      flex-direction: column !important;
-      gap: 14px !important;
-    }
-    .dex-card {
-      width: 100% !important;
-      box-sizing: border-box;
-    }
-  </style>
 </head>
 <body>
   <h1>
     <img src="AB.png" alt="Pixel portrait of Adam Back" class="ab-avatar">
     Hashcash PoW Faucet
   </h1>
+<!-- Mobile-only: sticky mini top bar + quick navigation (shown only when logged in) -->
+<div id="mobile-topbar" style="display:none;">
+  <div class="topbar-row">
+    <div class="topbar-left">
+      <div class="topbar-balance" id="mobile-balance">Balance: –</div>
+      <div class="topbar-addr">
+        <span id="mobile-address">Address: –</span>
+        <button id="btn-mobile-copy" type="button" class="icon-button" title="Copy address">📋</button>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-mobile-gear" type="button" class="icon-button" title="Menu">⚙️</button>
+    </div>
+  </div>
+
+  <div id="mobile-menu" style="display:none;">
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <a href="#account-section">Account</a>
+      <a href="#dex-section">DEX</a>
+      <a href="#about">About</a>
+    </div>
+  </div>
+</div>
+
+<div id="mobile-quick-actions" style="display:none;">
+  <div class="qa-row">
+    <button id="btn-mobile-go-earn" type="button">Mine / Earn</button>
+    <button id="btn-mobile-go-send" type="button">Send</button>
+    <button id="btn-mobile-go-redeem" type="button">Redeem</button>
+  </div>
+</div>
+
 
 <div id="info-section">
   <p>
-    Create an anonymous address and earn <strong>Credits</strong> by completing
-    <a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style anti-spam Proof-of-Work tasks.
-    Credits can be sent to other accounts without fees.
+    Create an anonymous account and earn <strong>Hash Cash Credits (HCC)</strong> by completing Proof-of-Work tasks.
+    HCC can be sent to other accounts instantly and without fees.
   </p>
   <p>
-    You can <strong>redeem</strong> by burning Credits for small tips in supported cryptocurrencies.
-    An experimental, non-custodial <strong>P2P DEX</strong> also lets you trade Credits for <strong>VECO</strong> (more coins may be added later).
+    You can <strong>redeem</strong> by burning HCC for small tips in cryptocurrencies.
+    A <strong>P2P DEX</strong> also lets you trade HCC for <strong>VECO</strong>.
   </p>
   <p>
     <strong>Redeem</strong> is available for the following crypto currencies:
@@ -47,9 +75,9 @@
     <p>Loading supported coins…</p>
   </div>
 
-  <p style="margin-top:10px; opacity:0.85;">
+  <p id="info-account-required-note" style="margin-top:10px; opacity:0.85;">
     To use <strong>Redeem</strong> and <strong>DEX</strong>, you first need to mine an account once by solving a small Proof-of-Work puzzle.
-    Depending on your hardware, this can take anywhere from minutes to hours.
+    Depending on your hardware, this can take several minutes.
   </p>
 
   <p class="about-link"><a href="#about">Tell me more!</a></p>
@@ -58,7 +86,7 @@
   <div id="signup-section">
     <div class="button-row">
       <button id="btn-signup">Signup (PoW)</button>
-      <button id="btn-stop-mining-signup" type="button" style="display:none;">Stop mining</button>
+      <button id="btn-stop-mining-signup" type="button" style="display:none;">Cancel</button>
     </div>
     <div id="signup-status" class="section-status" style="margin-top:10px;"></div>
     <div id="signup-hashrate" style="margin-top:8px; opacity:0.9; display:none;"></div>
@@ -71,44 +99,68 @@
 
   <hr>
 
+  <div id="status-panel">
+    <div id="status-address" style="display:none;"></div>
+    <div id="credits"></div>
+  </div>
+
+  <hr>
+
   <div id="earn-section">
   <h2>Mining</h2>
-    <p>
-      Please note: You can mine into the same account from several devices on your home network in parallel, but not into different accounts.
-      For optimal performance, especially on older and/or slow devices, we recommend using the <a href="https://github.com/Hashcash-PoW-Faucet/faucet-cpu-miner" target="_blank" rel="noopener noreferrer">CLI miner</a>.
-    </p>
-  <div class="button-row">
-    <button id="btn-earn">Earn 1 credit (PoW)</button>
-    <button id="btn-stop-mining" type="button" style="display:none;">Stop mining</button>
-  </div>
+    <div class="toggle-row">
+      <button id="btn-toggle-mining-note" type="button" class="toggle-link" data-toggle-target="mining-note" data-toggle-label-show="Show info" data-toggle-label-hide="Hide">Show info</button>
+      <div id="mining-note" class="toggle-content" style="display:none;">
+        <p>
+          Please note: You can mine into the same account from several devices on your home network in parallel, but not into different accounts.
+          For optimal performance, especially on older and/or slow devices, we recommend using the <a href="https://github.com/Hashcash-PoW-Faucet/faucet-cpu-miner" target="_blank" rel="noopener noreferrer">CLI miner</a>.
+        </p>
+      </div>
+    </div>
+
+    <div id="status"></div>
+    <div id="hashrate"></div>
+    <div id="cooldown-countdown"></div>
+
     <div style="margin-top:6px;">
       <label>
         <input type="checkbox" id="auto-mine-checkbox">
         Auto-mine until daily cap (pauses during cooldown)
       </label>
     </div>
-  </div>
 
-  <div id="status-panel">
-    <div id="status"></div>
-    <div id="credits"></div>
-    <div id="hashrate"></div>
-    <div id="cooldown-countdown"></div>
+    <div style="margin-top:6px;">
+      <label for="pow-threads">
+        Worker threads:
+        <input id="pow-threads" type="number" min="1" step="1" value="1" style="width:60px;">
+        <span id="pow-threads-hint" style="font-size:12px; opacity:0.8;"></span>
+      </label>
+    </div>
+
+    <div class="button-row">
+      <button id="btn-earn">Earn 1 credit (PoW)</button>
+      <button id="btn-stop-mining" type="button" style="display:none;">Stop mining</button>
+    </div>
+
   </div>
 
   <hr>
 
   <div id="redeem-section">
     <h2>Redeem</h2>
-    <p>
-      To request a redeem, you must own at least
-      <span id="min-redeem-credits">20</span> credits. Each redeem temporarily locks a fixed number of credits from your balance. If a tip is sent, those locked credits are burned; if no payout happens (for example because the faucet wallet is empty), the locked credits are unlocked again.
-    </p>
+    <div class="toggle-row">
+      <button id="btn-toggle-redeem-note" type="button" class="toggle-link" data-toggle-target="redeem-note" data-toggle-label-show="Show info" data-toggle-label-hide="Hide">Show info</button>
+      <div id="redeem-note" class="toggle-content" style="display:none;">
+        <p>
+          To request a redeem, you must own at least
+          <span id="min-redeem-credits">20</span> HCC. Each redeem temporarily locks a fixed number of HCC from your balance. If a tip is sent, those locked HCC are burned; if no payout happens (for example because the faucet wallet is empty), the locked HCC are unlocked again.
+        </p>
+      </div>
+    </div>
     <label for="redeem-address">Tip address:</label>
     <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
     <label for="redeem-currency">Currency:</label>
     <select id="redeem-currency">
-      <option value="LCC">LCC</option>
       <option value="GRS">GRS</option>
       <option value="SLM">SLM</option>
       <option value="VECO">VECO</option>
@@ -118,7 +170,7 @@
 
     <h3 style="margin-top: 18px;">Redeem log</h3>
     <div class="header-row" style="margin-bottom:8px;">
-      <small style="opacity:0.8;">Shows the last 10 redeem requests from the server audit queue (public faucet log).</small>
+      <small style="opacity:0.8;">Shows the last 10 redeem requests.</small>
       <button id="btn-clear-redeem-log" type="button">Refresh</button>
     </div>
     <div id="redeem-log" style="
@@ -137,9 +189,23 @@
 
   <hr>
 
-  <div id="account-section">
+  <div id="send-section">
+    <h2>Send HCC</h2>
+    <p>Send HCC to another address.</p>
+    <label for="send-to-address">Recipient address:</label>
+    <input id="send-to-address" type="text" size="60" placeholder="Paste recipient address here">
+    <p></p>
+    <label for="send-amount">Amount:</label>
+    <input id="send-amount" type="number" min="1" step="1" value="1">
+    <button id="btn-send">Send HCC</button>
+    <div id="send-status" class="section-status" style="margin-top:10px;"></div>
+  </div>
+
+  <hr>
+
+    <div id="account-section">
     <h2>Account management</h2>
-    <p><strong>Warning:</strong> Your private key controls all your credits. Keep it safe and back it up.</p>
+    <p><strong>Warning:</strong> Your private key controls all your HCC. Keep it safe and back it up.</p>
     <div id="address-info"></div>
     <label for="import-account">Import private key:</label>
     <input id="import-account" type="text" size="60" placeholder="Paste your private key here">
@@ -152,28 +218,17 @@
 
   <hr>
 
-  <div id="send-section">
-    <h2>Send credits</h2>
-    <p>Send credits to another address.</p>
-    <label for="send-to-address">Recipient address:</label>
-    <input id="send-to-address" type="text" size="60" placeholder="Paste recipient address here">
-    <p></p>
-    <label for="send-amount">Amount:</label>
-    <input id="send-amount" type="number" min="1" step="1" value="1">
-    <button id="btn-send">Send credits</button>
-    <div id="send-status" class="section-status" style="margin-top:10px;"></div>
-  </div>
-
-  <hr>
-
-  <hr>
-
   <div id="dex-section">
-    <h2>DEX (alpha)</h2>
-    <p style="opacity:0.85; margin-top:-6px;">
-      This is a non-custodial P2P exchange. The DEX never receives or holds your coins — you pay the counterparty’s address directly.
-      A watcher confirms the payment on-chain and tracks confirmations until settlement.
-    </p>
+    <h2>DEX</h2>
+    <div class="toggle-row" style="margin-top:-6px;">
+      <button id="btn-toggle-dex-note" type="button" class="toggle-link" data-toggle-target="dex-note" data-toggle-label-show="Show info" data-toggle-label-hide="Hide">Show info</button>
+      <div id="dex-note" class="toggle-content" style="display:none;">
+        <p style="opacity:0.85; margin-top:6px;">
+          This is a non-custodial P2P exchange. The DEX never receives or holds your coins — you pay the counterparty’s address directly.
+          A watcher confirms the payment on-chain and tracks confirmations until settlement.
+        </p>
+      </div>
+    </div>
 
     <div class="dex-grid">
       <!-- Card 1: Create order -->
@@ -191,7 +246,7 @@
           <option value="VECO">VECO</option>
         </select>
 
-        <label for="dex-credits">Credits amount:</label>
+        <label for="dex-credits">HCC amount:</label>
         <input id="dex-credits" type="number" min="1" step="1" value="5">
 
         <label for="dex-price">Price (coin per credit):</label>
@@ -243,7 +298,7 @@
       <li>
         <strong>Crypto-inspired accounts:</strong>
         Each user gets a "private key" after a PoW signup challenge that is stored in this browser
-        and used to authenticate with the server. The server tracks your credits using an address derived from
+        and used to authenticate with the server. The server tracks your HCC using an address derived from
         this private key, similar to a very simple wallet address, but never stores the key itself.
       </li>
       <li>
@@ -263,9 +318,9 @@
    <section id="disclaimer">
     <h2>Disclaimer</h2>
     <p>
-      Disclaimer: Credits in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
+      Disclaimer: Credits (Hash Cash Credits - HCC) in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
       Any crypto tip is purely discretionary, may be small, irregular or skipped entirely, and can be changed or discontinued at any time. There is no guaranteed probability,
-      minimum or maximum payout and no right or expectation of any payment. The experimental DEX is non-custodial: we do not hold or escrow your coins; payments are made directly
+      minimum or maximum payout and no right or expectation of any payment. The displayed ranges are not guaranteed and are provided for guidance only. The experimental DEX is non-custodial: we do not hold or escrow your coins; payments are made directly
       on-chain between users. Trades may fail, expire, or be delayed (including due to network conditions, confirmations, wrong amounts, or chain reorgs). Use at your own risk.
     </p>
   </section>
@@ -479,7 +534,8 @@
 
               const rangeSuffix =
                 (minRedeem !== "" || maxRedeem !== "")
-                  ? ` — redeem: ${minRedeem !== "" ? minRedeem : "?"}–${maxRedeem !== "" ? maxRedeem : "?"} ${short}`
+                //  ? ` — redeem: ${minRedeem !== "" ? minRedeem : "?"}–${maxRedeem !== "" ? maxRedeem : "?"} ${short}`
+                  ? ` up to ${maxRedeem !== "" ? maxRedeem : "?"} ${short}`
                   : "";
 
               const p = document.createElement("p");
@@ -511,43 +567,49 @@
     const powWorkerScript = `
       self.importScripts('https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js');
 
-      function leadingZeroBits(bytes) {
-        let bits = 0;
-        for (let i = 0; i < bytes.length; i++) {
-          const b = bytes[i];
-          if (b === 0) {
-            bits += 8;
-          } else {
-            for (let j = 7; j >= 0; j--) {
-              if (((b >> j) & 1) === 0) {
-                bits += 1;
-              } else {
-                return bits;
-              }
-            }
-            return bits;
-          }
-        }
-        return bits;
-      }
-
       self.onmessage = function (e) {
-        const { message, bits } = e.data;
-        let nonce = 0;
+        const { message, bits, startNonce = 0, step = 1 } = e.data;
+        let nonce = startNonce;
+        const prefix = message + "|"; // reuse this string prefix for all hashes
+
+        // Precompute threshold parameters for leading-zero-bits check
+        const fullZeroBytes = bits >> 3;       // bits / 8
+        const extraBits = bits & 7;            // bits % 8
+        const partialMask = extraBits ? ((0xFF << (8 - extraBits)) & 0xFF) : 0;
+
         const t0 = Date.now();
         let lastReport = t0;
 
         while (true) {
-          const input = message + "|" + nonce;
+          const input = prefix + nonce;
           const digest = sha256.array(input);
-          if (leadingZeroBits(digest) >= bits) {
+
+          // Fast check: required number of leading zero bytes + optional partial byte
+          let ok = true;
+
+          // Check full zero bytes
+          for (let i = 0; i < fullZeroBytes; i++) {
+            if (digest[i] !== 0) {
+              ok = false;
+              break;
+            }
+          }
+
+          // If still ok and we need extra bits, check the partial byte with a mask
+          if (ok && extraBits) {
+            if ((digest[fullZeroBytes] & partialMask) !== 0) {
+              ok = false;
+            }
+          }
+
+          if (ok) {
             const dt = (Date.now() - t0) / 1000;
             const rate = nonce > 0 && dt > 0 ? nonce / dt : 0;
             self.postMessage({ nonce: String(nonce), time: dt, rate, done: true });
             break;
           }
 
-          nonce++;
+          nonce += step;
 
           // Periodic progress updates (about every 500 ms)
           if (nonce % 50000 === 0) {
@@ -564,15 +626,25 @@
     `;
     const powWorkerBlob = new Blob([powWorkerScript], { type: 'application/javascript' });
     const powWorkerUrl = URL.createObjectURL(powWorkerBlob);
-    let powWorker = new Worker(powWorkerUrl);
-    // Allow canceling an active PoW by terminating the worker.
-    // (The worker loop is synchronous and cannot be interrupted otherwise.)
-    let activePowReject = null;
-    let activePowHandler = null;
 
-    function recreatePowWorker() {
-      try { powWorker.terminate(); } catch (e) {}
-      powWorker = new Worker(powWorkerUrl);
+    // Multi-worker pool state
+    let powWorkers = [];
+    let powWorkerHandlers = [];
+    let activePowReject = null;
+
+    function cleanupPowWorkers() {
+      for (let i = 0; i < powWorkers.length; i++) {
+        const w = powWorkers[i];
+        const h = powWorkerHandlers[i];
+        try {
+          if (w && h) w.removeEventListener("message", h);
+        } catch (e) {}
+        try {
+          if (w) w.terminate();
+        } catch (e) {}
+      }
+      powWorkers = [];
+      powWorkerHandlers = [];
     }
 
     function stopMining(reason = "Mining stopped by user.") {
@@ -581,16 +653,12 @@
       const cb = document.getElementById("auto-mine-checkbox");
       if (cb) cb.checked = false;
 
-      // If a PoW is running, terminate worker and reject the pending promise
+      // If a PoW is running, terminate workers and reject the pending promise
       if (activePowReject) {
         const rej = activePowReject;
         activePowReject = null;
-        try {
-          if (activePowHandler) powWorker.removeEventListener("message", activePowHandler);
-        } catch (e) {}
-        activePowHandler = null;
 
-        recreatePowWorker();
+        cleanupPowWorkers();
         rej(new Error(reason));
 
         // IMPORTANT: Release the server-side IP lock for claim-PoW immediately.
@@ -638,31 +706,76 @@
         return;
       }
       const sum = hashrateSamples.reduce((acc, s) => acc + s.r, 0);
-      const avg = sum / hashrateSamples.length;
-      setHashrate(avg);
+      // Interpret sum of recent per-worker rates as the total hashrate.
+      setHashrate(sum);
+    }
+
+    function getPowWorkerCount() {
+      const input = document.getElementById("pow-threads");
+      const hc = navigator.hardwareConcurrency || 0;
+      let n = input ? parseInt(input.value, 10) : NaN;
+
+      // Fallback: if input invalid, default to hardwareConcurrency or 1.
+      if (!Number.isFinite(n) || n <= 0) {
+        n = hc || 1;
+      }
+
+      // Clamp to hardwareConcurrency if available.
+      if (hc && n > hc) {
+        n = hc;
+      }
+
+      if (!Number.isFinite(n) || n <= 0) {
+        n = 1;
+      }
+      return n;
     }
 
     function solvePow(message, bits) {
       return new Promise((resolve, reject) => {
-        // Register this promise as the active PoW so it can be canceled.
-        activePowReject = reject;
+        const numWorkers = getPowWorkerCount();
 
-        const handler = (event) => {
-          const { nonce, time, rate, done } = event.data;
-          if (rate && isFinite(rate)) {
-            addHashrateSample(rate);
+        // If there is a previous active PoW, cancel it first.
+        if (activePowReject) {
+          try {
+            activePowReject(new Error("Previous mining canceled."));
+          } catch (e) {
+            // ignore
           }
-          if (done) {
-            try { powWorker.removeEventListener('message', handler); } catch (e) {}
-            activePowReject = null;
-            activePowHandler = null;
-            resolve(String(nonce));
+          activePowReject = null;
+        }
+
+        cleanupPowWorkers();
+        let resolved = false;
+
+        // Register this promise so stopMining() can cancel it.
+        activePowReject = (err) => {
+          if (!resolved) {
+            resolved = true;
+            cleanupPowWorkers();
+            reject(err);
           }
         };
 
-        activePowHandler = handler;
-        powWorker.addEventListener('message', handler);
-        powWorker.postMessage({ message, bits });
+        for (let i = 0; i < numWorkers; i++) {
+          const w = new Worker(powWorkerUrl);
+          const handler = (event) => {
+            const { nonce, time, rate, done } = event.data;
+            if (rate && isFinite(rate)) {
+              addHashrateSample(rate);
+            }
+            if (done && !resolved) {
+              resolved = true;
+              cleanupPowWorkers();
+              activePowReject = null;
+              resolve(String(nonce));
+            }
+          };
+          w.addEventListener("message", handler);
+          powWorkers.push(w);
+          powWorkerHandlers.push(handler);
+          w.postMessage({ message, bits, startNonce: i, step: numWorkers });
+        }
       });
     }
 
@@ -781,7 +894,21 @@ function setMiningActive(active) {
     }
 
     function setCredits(msg) {
-      document.getElementById("credits").textContent = msg;
+      const el = document.getElementById("credits");
+      if (!el) return;
+
+      const raw = String(msg ?? "").trim();
+      if (!raw) {
+        el.textContent = "";
+        return;
+      }
+
+      // If caller already included the unit, do not duplicate.
+      if (/\bHCC\b/i.test(raw)) {
+        el.textContent = raw;
+      } else {
+        el.textContent = raw + " HCC";
+      }
     }
 
     function setHashrate(hashesPerSecond) {
@@ -813,7 +940,7 @@ function setMiningActive(active) {
         const expectedSeconds = expectedHashes / hashesPerSecond;
         if (Number.isFinite(expectedSeconds) && expectedSeconds > 0) {
           const eta = formatDurationHMS(expectedSeconds);
-          etaSuffix = ` · avg hit: ~${eta}`;
+          etaSuffix = `\navg hit: ~${eta}`;
         }
       }
 
@@ -893,7 +1020,7 @@ function setMiningActive(active) {
       // Account management (including private key import) should always be visible
       if (accountSection) accountSection.style.display = "";
 
-        if (accountId) {
+      if (accountId) {
         if (signupSection) signupSection.style.display = "none";
         if (statusSection) statusSection.style.display = "";
         if (earnSection) earnSection.style.display = "";
@@ -908,7 +1035,94 @@ function setMiningActive(active) {
         if (redeemSection) redeemSection.style.display = "none";
         if (dexSection) dexSection.style.display = "none";
       }
+
+      // Hide the info note when an account is loaded
+      const infoAccountReqNote = document.getElementById("info-account-required-note");
+      if (infoAccountReqNote) {
+        infoAccountReqNote.style.display = accountId ? "none" : "";
+      }
+
+      // Mobile-only UI (sticky topbar + quick actions)
+      const isMobile = window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
+      const mobileTopbar = document.getElementById("mobile-topbar");
+      const mobileQuick = document.getElementById("mobile-quick-actions");
+      const mobileMenu = document.getElementById("mobile-menu");
+
+      const showMobile = !!(accountId && isMobile);
+      if (mobileTopbar) mobileTopbar.style.display = showMobile ? "" : "none";
+      if (mobileQuick) mobileQuick.style.display = showMobile ? "" : "none";
+      if (!showMobile && mobileMenu) mobileMenu.style.display = "none";
     }
+
+
+    function setupToggleNotes() {
+      const buttons = document.querySelectorAll('button[data-toggle-target]');
+      buttons.forEach((btn) => {
+        const targetId = btn.getAttribute('data-toggle-target');
+        const labelShow = btn.getAttribute('data-toggle-label-show') || 'Show info';
+        const labelHide = btn.getAttribute('data-toggle-label-hide') || 'Hide';
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (!target) return;
+
+        // Ensure initial state is collapsed
+        btn.setAttribute('aria-expanded', 'false');
+        btn.textContent = labelShow;
+        target.style.display = 'none';
+
+        btn.addEventListener('click', () => {
+          const isOpen = target.style.display !== 'none';
+          if (isOpen) {
+            target.style.display = 'none';
+            btn.setAttribute('aria-expanded', 'false');
+            btn.textContent = labelShow;
+          } else {
+            target.style.display = '';
+            btn.setAttribute('aria-expanded', 'true');
+            btn.textContent = labelHide;
+          }
+        });
+      });
+    }
+
+    function shortenAccountIdTiny(s) {
+  if (!s) return "-";
+  const str = String(s);
+  if (str.length <= 14) return str;
+  return str.slice(0, 6) + "…" + str.slice(-4);
+}
+
+function setupMobileNav() {
+  // Gear menu toggle
+  const gear = document.getElementById("btn-mobile-gear");
+  const menu = document.getElementById("mobile-menu");
+  if (gear && menu) {
+    gear.addEventListener("click", () => {
+      menu.style.display = (menu.style.display === "none" || menu.style.display === "")
+        ? "block"
+        : "none";
+    });
+  }
+
+  const go = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Quick actions
+  document.getElementById("btn-mobile-go-earn")?.addEventListener("click", () => go("earn-section"));
+  document.getElementById("btn-mobile-go-send")?.addEventListener("click", () => go("send-section"));
+  document.getElementById("btn-mobile-go-redeem")?.addEventListener("click", () => go("redeem-section"));
+}
+
+// Init mobile navigation once (script is at end of body, so DOM is ready)
+setupMobileNav();
+
+// Re-evaluate visibility when viewport changes (mobile/desktop)
+window.addEventListener("resize", () => updateVisibility());
+
+
+
 
     function updateCooldownCountdown() {
       const el = document.getElementById("cooldown-countdown");
@@ -1181,6 +1395,12 @@ function setMiningActive(active) {
         lastCooldownUntil = 0;
         updateCooldownCountdown();
         updateVisibility();
+        // Hide/clear status-panel address line
+        const statusAddrEl = document.getElementById("status-address");
+        if (statusAddrEl) {
+          statusAddrEl.style.display = "none";
+          statusAddrEl.textContent = "";
+        }
         return;
       }
       try {
@@ -1212,28 +1432,47 @@ function setMiningActive(active) {
         lastAccountData = data;
         setAccountInfo();
 
+        const addressHtml = `
+          Address: <span class="mono" id="address-text">${data.account_id}</span>
+          <button type="button" class="icon-button btn-copy-address" title="Copy address to clipboard">📋</button>
+        `;
+
+        // Account section (Account management)
         const addrEl = document.getElementById("address-info");
         if (addrEl) {
-          addrEl.innerHTML = `
-          Address: <span id="address-text">${data.account_id}</span>
-          <button id="btn-copy-address" type="button" class="icon-button"
-                  title="Copy address to clipboard">📋</button>
-        `;
-        const copyBtn = document.getElementById("btn-copy-address");
-        if (copyBtn) {
-          copyBtn.addEventListener("click", () => {
-            copyAddressToClipboard(data.account_id);
-          });
-          }
+          addrEl.innerHTML = addressHtml;
         }
+
+        // Status panel (top)
+        const statusAddrEl = document.getElementById("status-address");
+        if (statusAddrEl) {
+          statusAddrEl.style.display = "";
+          statusAddrEl.innerHTML = addressHtml;
+        }
+
+        // Wire up all copy buttons (there are two instances: status panel + account section)
+        document.querySelectorAll(".btn-copy-address").forEach((btn) => {
+          btn.onclick = () => copyAddressToClipboard(data.account_id);
+        });
         currentAddress = data.account_id;
+
+        // Update mobile sticky topbar text + copy
+        const mb = document.getElementById("mobile-balance");
+        const ma = document.getElementById("mobile-address");
+        if (mb) mb.textContent = `Balance: ${data.credits} HCC`;
+        if (ma) ma.textContent = `Address: ${shortenAccountIdTiny(data.account_id)}`;
+
+        const btnMobileCopy = document.getElementById("btn-mobile-copy");
+        if (btnMobileCopy) {
+          btnMobileCopy.onclick = () => copyAddressToClipboard(data.account_id);
+        }
 
         const nowLocal = Math.floor(Date.now() / 1000);
         serverTimeOffset = data.server_time - nowLocal;
         lastCooldownUntil = data.cooldown_until;
 
         setCredits(
-          `Credits: ${data.credits}, earned today: ${data.earned_today}/${data.daily_earn_cap}`
+          `Balance: ${data.credits} HCC\nEarned today: ${data.earned_today}/${data.daily_earn_cap}`
         );
         updateCooldownCountdown();
         updateVisibility();
@@ -1453,7 +1692,7 @@ function renderDexOpenOrders(orders) {
     info.innerHTML =
       `<strong>#${o.order_id}</strong><br>` +
       `<span style="opacity:0.8;">maker=${shortenAccountId(o.maker_account_id)} wants to </span>` +
-      `${verb} ${formatCoinAmount(amt)} credits for <strong>${formatCoinAmount(totalCoin)} ${cur}</strong> ` +
+      `${verb} ${formatCoinAmount(amt)} HCC for <strong>${formatCoinAmount(totalCoin)} ${cur}</strong> ` +
       `<span style="opacity:0.85;">(${formatCoinAmount(ppcCoin)} ${cur}/credit)</span>`;
 
     const actions = document.createElement("div");
@@ -1656,7 +1895,7 @@ function renderDexMyTrades(trades) {
       : `state=${stateDisplay} · confs=${confsShown}/${req}${extra}`;
 
     info.innerHTML =
-      `<strong>#${t.trade_id}</strong> (order #${t.order_id}) ${verb} ${formatCoinAmount(amt)} credits for <strong>${expCoinText} ${cur}</strong><br>` +
+      `<strong>#${t.trade_id}</strong> (order #${t.order_id}) ${verb} ${formatCoinAmount(amt)} HCC for <strong>${expCoinText} ${cur}</strong><br>` +
       `<span style="opacity:0.85;">${metaLine}</span>` +
       instructionLine;
 
@@ -1697,7 +1936,7 @@ async function placeDexOrder() {
   const payTo = (document.getElementById("dex-payto")?.value || "").trim();
 
   if (!side || !currency) return setDexStatus("Please select side and currency.");
-  if (!Number.isFinite(credits) || credits <= 0) return setDexStatus("Enter a valid credits amount.");
+  if (!Number.isFinite(credits) || credits <= 0) return setDexStatus("Enter a valid HCC amount.");
   if (!Number.isFinite(priceCoinPerCredit) || priceCoinPerCredit <= 0) return setDexStatus("Enter a valid price (coin/credit).");
   if (side === "SELL_CREDITS" && !payTo) return setDexStatus("SELL_CREDITS needs pay_to_address.");
 
@@ -1938,6 +2177,11 @@ async function cancelDexOrder(orderId) {
       if (addrEl) {
         addrEl.textContent = "";
       }
+      const statusAddrEl = document.getElementById("status-address");
+      if (statusAddrEl) {
+        statusAddrEl.style.display = "none";
+        statusAddrEl.textContent = "";
+      }
 
       updateVisibility();
       setAccountStatus("Local private key cleared from this browser.");
@@ -1983,7 +2227,7 @@ async function cancelDexOrder(orderId) {
             return;
           }
           const data = await res.json();
-          setSendStatus("Transfer ok. Your new balance: " + data.from_credits + " credits.");
+          setSendStatus("Transfer ok. Your new balance: " + data.from_credits + " HCC.");
           refreshAccount().catch(err => {
             console.error(err);
             setSendStatus("Error while refreshing account after transfer: " + err);
@@ -2059,7 +2303,7 @@ async function cancelDexOrder(orderId) {
               data.message +
               extra +
               stateInfo +
-              " Credits left: " + data.credits_left +
+              " HCC left: " + data.credits_left +
               ". Minimum required: " + data.min_credits + "."
             );
 
@@ -2103,8 +2347,33 @@ async function cancelDexOrder(orderId) {
     }
 
     // Initial UI state
+    setupToggleNotes();
+    setupMobileNav();
+
+    // Initialize worker-threads input based on hardware concurrency
+    (function initPowThreadsInput() {
+      const input = document.getElementById("pow-threads");
+      const hint = document.getElementById("pow-threads-hint");
+      if (!input) return;
+      const hc = navigator.hardwareConcurrency || 0;
+      if (hc > 0) {
+        input.max = String(hc);
+        const defaultWorkers = Math.min(4, hc);
+        input.value = String(defaultWorkers);
+        if (hint) {
+          hint.textContent = `(up to ${hc} threads)`;
+        }
+      } else {
+        input.value = "1";
+        if (hint) {
+          hint.textContent = "";
+        }
+      }
+    })();
+
     updateVisibility();
     refreshRedeemLog();
+    setupMobileNav();
 
     // If we have a pending signup submit and no account yet, show retry UI.
     if (!accountId) {
@@ -2158,8 +2427,6 @@ async function cancelDexOrder(orderId) {
       console.error("Error during initial config load:", err);
       refreshAccount();
     });
-  </script>
-  <script>
     // PWA: register service worker (safe no-op on unsupported browsers)
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -2169,6 +2436,7 @@ async function cancelDexOrder(orderId) {
       });
     }
   </script>
+
   <hr>
   </body>
   </html>

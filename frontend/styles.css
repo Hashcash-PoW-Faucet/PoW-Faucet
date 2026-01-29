@@ -266,21 +266,29 @@ button.secondary{
 }
 button.secondary:hover{ background: rgba(255,255,255,0.11); }
 
-/* Compact icon-only buttons (e.g. copy/clipboard) */
 .icon-button{
+  /* Icon-only button (no visible frame) */
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  flex: 0 0 auto;   /* <-- prevents growing to full width */
+  margin: 0;        /* <-- overrides global button margin */
+
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border-radius: 12px;
-  background: rgba(255,255,255,0.06);
-  color: var(--text);
+
+  background: transparent;
+  border: none;
+  border-radius: 8px;   /* only for focus/hover background */
   box-shadow: none;
-  border: 1px solid rgba(255,255,255,0.12);
-  margin-top: 10px;
+
+  color: rgba(233,236,245,0.92);
+  line-height: 1;
+
+  margin-top: 0;
 }
+
 .icon-button:hover{
   background: rgba(255,255,255,0.10);
   filter: none;
@@ -377,9 +385,10 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
 }
 
 /* Each stat line becomes a pill row (status panel only) */
+/* #status-panel #status-address, */
 #status-panel #credits,
-#status-panel #hashrate,
-#status-panel #cooldown-countdown{
+#earn-section #hashrate,
+#earn-section #cooldown-countdown{
   display: flex;
   align-items: center;
   gap: 10px;
@@ -387,6 +396,15 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.04);
+}
+
+#earn-section #hashrate,
+#signup-hashrate{
+  white-space: pre-line;
+}
+
+#earn-section #hashrate{
+  flex-wrap: wrap;
 }
 
 /* Make Credits the primary, most visible metric */
@@ -397,6 +415,8 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
   font-weight: var(--fw-bold);
   font-size: 22px;
   letter-spacing: 0.2px;
+  display: block;
+  white-space: pre-line;
 }
 
 #status-panel #credits b{
@@ -404,8 +424,28 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
   text-shadow: 0 2px 14px rgba(124,92,255,0.25);
 }
 
+.mono{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+#status-panel #status-address{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: rgba(233,236,245,0.92);
+}
+#status-panel #status-address .mono{
+  font-size: 12px;
+  opacity: 0.95;
+}
+
 /* Make the pickaxe clearly visible even on dark backgrounds */
-#status-panel #hashrate::before{
+#earn-section #hashrate::before{
   content: "⛏";
   font-size: 1.15em;
   opacity: 0.95;
@@ -414,7 +454,7 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
 
 /* Slight emphasis on the numbers (status panel only) */
 #status-panel #credits b,
-#status-panel #hashrate b{
+#earn-section #hashrate b{
   color: rgba(233,236,245,0.98);
 }
 
@@ -429,15 +469,21 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
 
   #status-panel #credits{ font-size: 19px; }
 
-  #status-panel #credits,
-  #status-panel #hashrate,
-  #status-panel #cooldown-countdown{ padding: 9px 10px; }
+  #earn-section #hashrate,
+  #earn-section #cooldown-countdown{ padding: 9px 10px; }
 
   /* Mobile: stack most buttons vertically */
   button{
     width: 100%;
     margin: 12px 0 0 0;
     display: block;
+  }
+
+  /* Keep toggle links compact (do not behave like full-width buttons) */
+  button.toggle-link{
+    width: auto;
+    margin: 6px 0 0 0;
+    display: inline-flex;
   }
 
   /* Mobile: stack action buttons too (prevents overflow in narrow cards) */
@@ -456,9 +502,11 @@ button.secondary:hover{ background: rgba(255,255,255,0.11); }
 
   /* Keep icon-only buttons compact */
   button.icon-button{
-    width: 40px;
-    display: inline-flex;
-  }
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+}
 
   input[type="text"],
   input[type="number"],
@@ -489,7 +537,7 @@ body > p.about-link{
 .dex-grid{
   display:flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   margin-top: 12px;
 }
 
@@ -500,6 +548,8 @@ body > p.about-link{
   background: rgba(0,0,0,0.22);
   overflow: hidden; /* keep inner rows inside rounded card */
   max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .dex-row{
@@ -604,6 +654,8 @@ body > p.about-link{
   box-sizing: border-box;
 }
 
+
+
 @media (max-width: 640px) {
   .button-row {
     flex-direction: column;
@@ -629,4 +681,198 @@ body > p.about-link{
     width: 100%;
     flex: 0 0 auto;
   }
+}
+
+/* ---------------------------
+   Collapsible “More info” notes
+   --------------------------- */
+.toggle-row{
+  margin-top: 6px;
+}
+
+.toggle-link{
+  /* Reset default button styles so it looks like a subtle text link */
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+  min-width: 0;
+  width: auto;
+
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  font: inherit;
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.2px;
+  color: var(--muted);
+  text-decoration: none;
+  opacity: 0.9;
+}
+
+/* Chevron indicator (collapsed/expanded) */
+.toggle-link::after{
+  content: "▸";
+  opacity: 0.85;
+  transform: translateY(1px);
+}
+
+.toggle-link[aria-expanded="true"]::after{
+  content: "▾";
+}
+
+.toggle-link:hover{
+  color: var(--text);
+}
+
+.toggle-link:hover::after{
+  opacity: 1;
+}
+
+.toggle-link:focus{ outline: none; }
+.toggle-link:focus-visible{
+  outline: 2px solid rgba(124,92,255,0.55);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.toggle-content{
+  margin-top: 6px;
+}
+
+/* ---------------------------
+   Mobile-only “App feeling” UI
+   (hidden on desktop)
+   --------------------------- */
+@media (max-width: 640px){
+  /* Sticky mini top bar */
+  #mobile-topbar{
+    position: sticky;
+    top: 0;
+    z-index: 999;
+
+    display: none; /* shown only when logged in via JS */
+    margin: 0 auto 10px;
+    padding: 10px 10px;
+
+    background: rgba(192,192,192,0.96);
+    border-width: 2px;
+    border-style: solid;
+    border-color: #ffffff #404040 #404040 #ffffff;
+
+    box-sizing: border-box;
+  }
+
+  #mobile-topbar .topbar-row{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  #mobile-topbar .topbar-left{
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  #mobile-topbar .topbar-balance{
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #mobile-topbar .topbar-addr{
+    margin-top: 2px;
+    font-size: 11px;
+    opacity: 0.9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #mobile-topbar .topbar-actions{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+
+  /* Make icon buttons truly compact on mobile */
+  #mobile-topbar .icon-button{
+    min-width: 0;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Quick actions row (primary actions) */
+  #mobile-quick-actions{
+    display: none; /* shown only when logged in via JS */
+    margin: 0 auto 10px;
+  }
+
+  #mobile-quick-actions .qa-row{
+    display: flex;
+    gap: 10px;
+  }
+
+  #mobile-quick-actions .qa-row button{
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+    margin: 0;
+    padding: 10px 10px;
+  }
+
+  /* One-click section chips */
+  #mobile-chips{
+    display: none; /* shown only when logged in via JS */
+    margin: 0 auto 10px;
+  }
+
+  #mobile-chips .chip-row{
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  #mobile-chips button{
+    min-width: 0;
+    width: auto;
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  /* Small dropdown menu under the gear */
+  #mobile-menu{
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #808080;
+  }
+
+  #mobile-menu a{
+    display: inline-block;
+    margin-right: 12px;
+    font-size: 12px;
+  }
+}
+
+/* Desktop: never show the mobile UI */
+@media (min-width: 641px){
+  #mobile-topbar,
+  #mobile-quick-actions,
+  #mobile-chips{ display: none !important; }
 }
