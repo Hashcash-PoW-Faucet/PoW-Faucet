@@ -743,6 +743,13 @@ body > p.about-link{
 
 .toggle-content{
   margin-top: 6px;
+  display: none; /* collapsed by default */
+}
+
+/* Open state (set by JS via data-open="1").
+   NOTE: HTML may contain inline style="display:none"; override deterministically. */
+.toggle-content[data-open="1"]{
+  display: block !important;
 }
 
 /* ---------------------------
@@ -751,6 +758,7 @@ body > p.about-link{
    --------------------------- */
 @media (max-width: 640px){
   /* Sticky mini top bar */
+    /* Sticky mini top bar */
   #mobile-topbar{
     position: sticky;
     top: 0;
@@ -758,14 +766,41 @@ body > p.about-link{
 
     display: none; /* shown only when logged in via JS */
     margin: 0 auto 10px;
-    padding: 10px 10px;
+    padding: 10px 12px;
 
-    background: rgba(192,192,192,0.96);
-    border-width: 2px;
-    border-style: solid;
-    border-color: #ffffff #404040 #404040 #ffffff;
+    /* Match the main dark glass theme */
+    background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.05));
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 
+    overflow: hidden;
     box-sizing: border-box;
+  }
+
+  #mobile-topbar::before{
+    content:"";
+    position:absolute;
+    inset:-2px;
+    background:
+      radial-gradient(600px 120px at 15% 0%, rgba(124,92,255,0.30), transparent 60%),
+      radial-gradient(500px 140px at 85% 10%, rgba(34,211,238,0.18), transparent 60%);
+    filter: blur(10px);
+    opacity: 0.9;
+    pointer-events:none;
+  }
+
+  #mobile-topbar > *{ position: relative; }
+
+  #mobile-topbar .topbar-earned{
+    margin-top: 2px;
+    font-size: 11px;
+    color: rgba(233,236,245,0.78);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   #mobile-topbar .topbar-row{
@@ -875,4 +910,122 @@ body > p.about-link{
   #mobile-topbar,
   #mobile-quick-actions,
   #mobile-chips{ display: none !important; }
+}
+
+.modal-overlay{
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+
+  /* Hard overrides: prevent global `div` card styling and `body > div` max-width rules
+     from turning overlays into centered cards (especially on mobile). */
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100dvh;
+  max-width: none !important;
+  margin: 0 !important;
+
+  /* Override the global `section, div { ... }` card look */
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+
+  background: rgba(0,0,0,0.6) !important;
+  padding: 16px;
+  box-sizing: border-box;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* If the overlay is a direct child of body, defeat `body > div { max-width: 980px; ... }` */
+body > div.modal-overlay{
+  max-width: none !important;
+  width: 100vw !important;
+  margin: 0 !important;
+}
+
+/* Safety net: if QR modals are identified by ID, ensure they are not constrained */
+#qr-modal,
+#qr-scan-modal{
+  max-width: none !important;
+  width: 100vw !important;
+  margin: 0 !important;
+}
+
+.modal-card{
+  width: min(520px, 100%);
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(17,24,39,0.92);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  padding: 14px;
+}
+
+.modal-header{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 10px;
+}
+
+.modal-title{
+  font-weight: 700;
+  font-size: 16px;
+}
+
+@media (max-width: 640px){
+  /* Mobile: hide the desktop status panel (we already have the sticky top bar) */
+  #status-panel,
+  #status-panel + hr{
+    display: none !important;
+  }
+
+  /* Mobile: make QR modals full-screen so the camera/QR is always "where you need it" */
+  #qr-modal,
+  #qr-scan-modal{
+    padding: 0 !important;
+  }
+
+  #qr-modal .modal-card,
+  #qr-scan-modal .modal-card{
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    padding: 12px !important;
+  }
+
+  #qr-video{
+    width: 100% !important;
+    height: calc(100vh - 120px) !important;
+    object-fit: cover;
+    border-radius: 12px;
+  }
+
+  #qr-canvas{
+    width: min(320px, 100%) !important;
+    height: auto !important;
+  }
+}
+
+/* --- Mobile UI gating (robust against inline styles / partial JS failures) --- */
+.mobile-only { display: none; }
+
+@media (max-width: 640px) {
+  /* Show the sticky mobile UI only when a private key is present */
+  html[data-has-account="1"] #mobile-topbar,
+  html[data-has-account="1"] #mobile-quick-actions {
+    display: block;
+  }
+
+  /* Hide the desktop status block on mobile when logged in */
+  html[data-has-account="1"] #desktop-status-block,
+  html[data-has-account="1"] #status-panel {
+    display: none;
+  }
 }

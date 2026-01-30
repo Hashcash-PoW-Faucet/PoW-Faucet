@@ -3,16 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <link rel="stylesheet" href="styles.css">
-  <style>
-    /* Mobile: hide the desktop status panel (we already have the sticky top bar) */
-    @media (max-width: 640px){
-      #status-panel,
-      #status-panel + hr{
-        display: none !important;
-      }
+  <script>
+  // Early, crash-proof flag: allows CSS to switch to mobile UI for returning users
+  (function () {
+    try {
+      var has = !!localStorage.getItem("account_id");
+      document.documentElement.dataset.hasAccount = has ? "1" : "0";
+    } catch (e) {
+      document.documentElement.dataset.hasAccount = "0";
     }
-  </style>
+  })();
+</script>
+  <link rel="stylesheet" href="styles.css">
   <!-- PWA -->
   <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#111827">
@@ -27,13 +29,15 @@
     Hashcash PoW Faucet
   </h1>
 <!-- Mobile-only: sticky mini top bar + quick navigation (shown only when logged in) -->
-<div id="mobile-topbar" style="display:none;">
+<div id="mobile-topbar" class="mobile-only">
   <div class="topbar-row">
     <div class="topbar-left">
       <div class="topbar-balance" id="mobile-balance">Balance: –</div>
+      <div class="topbar-earned" id="mobile-earned">Earned today: –</div>
       <div class="topbar-addr">
         <span id="mobile-address">Address: –</span>
         <button id="btn-mobile-copy" type="button" class="icon-button" title="Copy address">📋</button>
+        <button id="btn-mobile-show-qr" type="button" class="icon-button" title="Show address QR">🔳</button>
       </div>
     </div>
     <div class="topbar-actions">
@@ -50,7 +54,7 @@
   </div>
 </div>
 
-<div id="mobile-quick-actions" style="display:none;">
+<div id="mobile-quick-actions" class="mobile-only">
   <div class="qa-row">
     <button id="btn-mobile-go-earn" type="button">Mine / Earn</button>
     <button id="btn-mobile-go-send" type="button">Send</button>
@@ -58,6 +62,41 @@
   </div>
 </div>
 
+  <!-- QR Modal (Show address / any text as QR) -->
+<div id="qr-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
+    <div class="modal-header">
+      <div id="qr-modal-title" class="modal-title">QR</div>
+      <button id="btn-qr-close" type="button" class="icon-button" aria-label="Close">✖</button>
+    </div>
+    <div id="qr-modal-body" style="text-align:center;">
+      <div id="qr-box" style="display:none; margin: 0 auto; width:260px; height:260px; border-radius: 10px; background: rgba(255,255,255,0.08);"></div>
+      <canvas id="qr-canvas" style="max-width: 260px; width: 100%; height: auto; border-radius: 10px; background: rgba(255,255,255,0.08);"></canvas>
+      <div id="qr-render-hint" class="section-status" style="margin-top:10px; display:none;"></div>
+      <div id="qr-modal-text" class="dex-mono" style="margin-top:10px; word-break: break-all; opacity:0.9;"></div>
+      <div style="display:flex; gap:10px; justify-content:center; margin-top:12px;">
+        <button id="btn-qr-copy" type="button">Copy</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- QR Scanner Modal (Scan QR into an input) -->
+<div id="qr-scan-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="qr-scan-title">
+    <div class="modal-header">
+      <div id="qr-scan-title" class="modal-title">Scan QR</div>
+      <button id="btn-qr-scan-close" type="button" class="icon-button" aria-label="Close">✖</button>
+    </div>
+    <div id="qr-scan-body">
+      <video id="qr-video" playsinline autoplay muted style="width:100%; border-radius: 12px; background: rgba(0,0,0,0.3);"></video>
+      <div id="qr-scan-status" class="section-status" style="margin-top:10px;"></div>
+      <div style="display:flex; gap:10px; justify-content:center; margin-top:10px;">
+        <button id="btn-qr-scan-stop" type="button">Stop</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="info-section">
   <p>
@@ -97,6 +136,7 @@
     <div id="signup-retry-hint" class="section-status" style="margin-top:6px;"></div>
   </div>
 
+  <div id="desktop-status-block">
   <hr>
 
   <div id="status-panel">
@@ -105,6 +145,7 @@
   </div>
 
   <hr>
+</div>
 
   <div id="earn-section">
   <h2>Mining</h2>
@@ -158,7 +199,12 @@
       </div>
     </div>
     <label for="redeem-address">Tip address:</label>
-    <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here">
+
+    <div class="header-row" style="gap:10px; align-items:center;">
+      <input id="redeem-address" type="text" size="60" placeholder="Paste your crypto wallet address here" style="flex:1;">
+      <button id="btn-scan-redeem" type="button" title="Scan QR">Scan QR</button>
+    </div>
+
     <label for="redeem-currency">Currency:</label>
     <select id="redeem-currency">
       <option value="GRS">GRS</option>
@@ -168,23 +214,33 @@
     <button id="btn-redeem">Request redeem</button>
     <div id="redeem-status" class="section-status" style="margin-top:10px;"></div>
 
-    <h3 style="margin-top: 18px;">Redeem log</h3>
-    <div class="header-row" style="margin-bottom:8px;">
-      <small style="opacity:0.8;">Shows the last 10 redeem requests.</small>
-      <button id="btn-clear-redeem-log" type="button">Refresh</button>
+    <div class="toggle-row" style="margin-top: 18px;">
+    <button id="btn-toggle-redeem-log" type="button" class="toggle-link"
+          data-toggle-target="redeem-log-wrap"
+          data-toggle-label-show="Show redeem log"
+          data-toggle-label-hide="Hide redeem log"
+          data-default-open="desktop">Show redeem log</button>
+
+    <div id="redeem-log-wrap" class="toggle-content" style="display:none;">
+      <div class="header-row" style="margin:8px 0;">
+        <small style="opacity:0.8;">Shows the last 10 redeem requests.</small>
+        <button id="btn-clear-redeem-log" type="button">Refresh</button>
+      </div>
+
+      <div id="redeem-log" style="
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 8px;
+        padding: 10px;
+        background: rgba(0,0,0,0.25);
+        max-height: 180px;
+        overflow: auto;
+      ">No redeems yet.</div>
     </div>
-    <div id="redeem-log" style="
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-      font-size: 12px;
-      line-height: 1.35;
-      white-space: pre-wrap;
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 8px;
-      padding: 10px;
-      background: rgba(0,0,0,0.25);
-      max-height: 180px;
-      overflow: auto;
-    ">No redeems yet.</div>
+    </div>
   </div>
 
   <hr>
@@ -193,7 +249,10 @@
     <h2>Send HCC</h2>
     <p>Send HCC to another address.</p>
     <label for="send-to-address">Recipient address:</label>
-    <input id="send-to-address" type="text" size="60" placeholder="Paste recipient address here">
+    <div class="header-row" style="gap:10px; align-items:center;">
+      <input id="send-to-address" type="text" size="60" placeholder="Paste recipient address here" style="flex:1;">
+      <button id="btn-scan-send" type="button" title="Scan QR">Scan QR</button>
+    </div>
     <p></p>
     <label for="send-amount">Amount:</label>
     <input id="send-amount" type="number" min="1" step="1" value="1">
@@ -208,7 +267,10 @@
     <p><strong>Warning:</strong> Your private key controls all your HCC. Keep it safe and back it up.</p>
     <div id="address-info"></div>
     <label for="import-account">Import private key:</label>
-    <input id="import-account" type="text" size="60" placeholder="Paste your private key here">
+    <div class="header-row" style="gap:10px; align-items:center;">
+      <input id="import-account" type="text" size="60" placeholder="Paste your private key here" style="flex:1;">
+      <button id="btn-scan-import" type="button" title="Scan QR">Scan QR</button>
+    </div>
     <button id="btn-import">Use private key</button>
     <button id="btn-export">Export private key</button>
     <button id="btn-export-file">Download key file</button>
@@ -271,59 +333,89 @@
       </div>
 
       <!-- Card 3: My trades -->
-      <div class="dex-card">
-        <div class="header-row">
-          <h3 style="margin-top:0; margin-bottom:0;">My trades</h3>
+      <h3 style="margin-top:0; margin-bottom:0;">My trades</h3>
+      <div class="toggle-row" style="margin-top:6px;">
+        <button id="btn-toggle-dex-trades" type="button" class="toggle-link"
+            data-toggle-target="dex-trades-wrap"
+            data-toggle-label-show="Show trades"
+            data-toggle-label-hide="Hide trades"
+            data-default-open="desktop">Show trades</button>
+      <div id="dex-trades-wrap" class="toggle-content" style="display:none;">
+        <div class="header-row" style="margin-top:10px;">
+          <small style="opacity:0.8;">Shows confirmations progress (confs / required) until settlement.</small>
           <button id="btn-dex-refresh" type="button">Refresh</button>
-        </div>
-        <small style="opacity:0.8;">Shows confirmations progress (confs / required) until settlement.</small>
-        <div style="margin-top:10px;" id="dex-my-trades" class="dex-mono">Loading…</div>
       </div>
+      <div style="margin-top:10px;" id="dex-my-trades" class="dex-mono">Loading…</div>
+    </div>
+    </div>
     </div>
   </div>
 
   <hr>
 
     <section id="about">
-    <h2>What is this?</h2>
-    <p>
-      This small project is a tribute to Hashcash and early cypherpunks and combines two ideas:
-    </p>
-    <ul>
-      <li>
-        <strong><a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style Proof of Work:</strong>
-        Every signup and claim requires solving a stateless PoW challenge, inspired by the original Hashcash anti-spam mechanism
-        proposed by Adam Back in 1997.
-      </li>
-      <li>
-        <strong>Crypto-inspired accounts:</strong>
-        Each user gets a "private key" after a PoW signup challenge that is stored in this browser
-        and used to authenticate with the server. The server tracks your HCC using an address derived from
-        this private key, similar to a very simple wallet address, but never stores the key itself.
-      </li>
-      <li>
-        <strong>No registration or personal data:</strong>
-        You can create and use an account without email, username, or KYC. The server only sees anonymous
-        keys and derived addresses, and there is no traditional signup form.
-      </li>
-      <li>
-        <strong>Limited account creation per IP/day (demo rule):</strong>
-        For fairness and to limit abuse, this demo only allows a limited number of signups per IP address per day.
-      </li>
-    </ul>
-  </section>
+      <h2>What is this?</h2>
+
+      <div class="toggle-row" style="margin-top:-6px;">
+        <button id="btn-toggle-about" type="button" class="toggle-link"
+                data-toggle-target="about-wrap"
+                data-toggle-label-show="Show"
+                data-toggle-label-hide="Hide"
+                data-default-open="desktop">Show</button>
+
+        <div id="about-wrap" class="toggle-content" style="display:none;">
+          <p>
+            This small project is a tribute to Hashcash and early cypherpunks and combines two ideas:
+          </p>
+          <ul>
+            <li>
+              <strong><a href="https://en.wikipedia.org/wiki/Hashcash" target="_blank" rel="noopener noreferrer">Hashcash</a>-style Proof of Work:</strong>
+              Every signup and claim requires solving a stateless PoW challenge, inspired by the original Hashcash anti-spam mechanism
+              proposed by Adam Back in 1997.
+            </li>
+            <li>
+              <strong>Crypto-inspired accounts:</strong>
+              Each user gets a "private key" after a PoW signup challenge that is stored in this browser
+              and used to authenticate with the server. The server tracks your HCC using an address derived from
+              this private key, similar to a very simple wallet address, but never stores the key itself.
+            </li>
+            <li>
+              <strong>No registration or personal data:</strong>
+              You can create and use an account without email, username, or KYC. The server only sees anonymous
+              keys and derived addresses, and there is no traditional signup form.
+            </li>
+            <li>
+              <strong>Limited account creation per IP/day (demo rule):</strong>
+              For fairness and to limit abuse, this demo only allows a limited number of signups per IP address per day.
+            </li>
+          </ul>
+        </div>
+      </div>
+</section>
 
   <hr>
 
    <section id="disclaimer">
-    <h2>Disclaimer</h2>
-    <p>
-      Disclaimer: Credits (Hash Cash Credits - HCC) in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
-      Any crypto tip is purely discretionary, may be small, irregular or skipped entirely, and can be changed or discontinued at any time. There is no guaranteed probability,
-      minimum or maximum payout and no right or expectation of any payment. The displayed ranges are not guaranteed and are provided for guidance only. The experimental DEX is non-custodial: we do not hold or escrow your coins; payments are made directly
-      on-chain between users. Trades may fail, expire, or be delayed (including due to network conditions, confirmations, wrong amounts, or chain reorgs). Use at your own risk.
-    </p>
-  </section>
+      <h2>Disclaimer</h2>
+
+      <div class="toggle-row" style="margin-top:-6px;">
+        <button id="btn-toggle-disclaimer" type="button" class="toggle-link"
+                data-toggle-target="disclaimer-wrap"
+                data-toggle-label-show="Show"
+                data-toggle-label-hide="Hide"
+                data-default-open="desktop">Show</button>
+
+        <div id="disclaimer-wrap" class="toggle-content" style="display:none;">
+          <p>
+            Disclaimer: Credits (Hash Cash Credits - HCC) in this demo are play points only. They have no monetary value, do not represent a claim against us and have no fixed or implied exchange rate.
+            Any crypto tip is purely discretionary, may be small, irregular or skipped entirely, and can be changed or discontinued at any time. There is no guaranteed probability,
+            minimum or maximum payout and no right or expectation of any payment. The displayed ranges are not guaranteed and are provided for guidance only. The experimental DEX is non-custodial: we do not hold or escrow your coins; payments are made directly
+            on-chain between users. Trades may fail, expire, or be delayed (including due to network conditions, confirmations, wrong amounts, or chain reorgs). Use at your own risk.
+          </p>
+        </div>
+      </div>
+   </section>
+
    <section id="links">
     <h2>Links</h2>
    <p>
@@ -336,6 +428,17 @@
 
   <!-- SHA256 library -->
   <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js"></script>
+
+  <!-- QR code generator (for “Show QR”)
+       IMPORTANT: self-host this file to avoid CDN MIME/nosniff/adblock issues.
+       Place `qrcode.min.js` next to `index.html` or adjust the path below. -->
+  <script src="./qrcode.min.js"></script>
+  <script>
+    // If QRCode is missing, we show a clear hint in the modal.
+    if (!window.QRCode) {
+      console.warn("QRCode library not found. Ensure ./qrcode.min.js is served from your domain.");
+    }
+  </script>
 
   <script>
     // const BASE_URL = "http://127.0.0.1:8200"; // backend FastAPI URL
@@ -565,7 +668,19 @@
 
     // Web Worker for PoW (keeps the UI responsive)
     const powWorkerScript = `
-      self.importScripts('https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js');
+      // Try to load SHA256 in a robust way.
+      // 1) Prefer same-origin (recommended: self-host sha256.min.js)
+      // 2) Fallback to CDN
+      (function loadSha256(){
+        try { self.importScripts('./sha256.min.js'); } catch (e) {}
+        if (!self.sha256) {
+          try { self.importScripts('https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js'); } catch (e) {}
+        }
+        if (!self.sha256) {
+          // Signal a fatal error to the main thread; otherwise the UI would “mine forever”.
+          try { self.postMessage({ fatal: true, error: 'SHA256 library failed to load in worker. If you use an adblocker/privacy shield, it may block jsdelivr. Please self-host sha256.min.js next to index.html.' }); } catch (e) {}
+        }
+      })();
 
       self.onmessage = function (e) {
         const { message, bits, startNonce = 0, step = 1 } = e.data;
@@ -582,6 +697,12 @@
 
         while (true) {
           const input = prefix + nonce;
+          // If the SHA256 lib failed to load, stop the worker cleanly.
+          if (!self.sha256 || typeof self.sha256.array !== 'function') {
+            self.postMessage({ fatal: true, error: 'SHA256 not available in worker (sha256.array missing). Please self-host sha256.min.js or disable blocking extensions.' });
+            break;
+          }
+
           const digest = sha256.array(input);
 
           // Fast check: required number of leading zero bytes + optional partial byte
@@ -630,14 +751,17 @@
     // Multi-worker pool state
     let powWorkers = [];
     let powWorkerHandlers = [];
+    let powWorkerErrorHandlers = [];
     let activePowReject = null;
 
     function cleanupPowWorkers() {
       for (let i = 0; i < powWorkers.length; i++) {
         const w = powWorkers[i];
         const h = powWorkerHandlers[i];
+        const eh = powWorkerErrorHandlers[i];
         try {
           if (w && h) w.removeEventListener("message", h);
+          if (w && eh) w.removeEventListener("error", eh);
         } catch (e) {}
         try {
           if (w) w.terminate();
@@ -645,6 +769,7 @@
       }
       powWorkers = [];
       powWorkerHandlers = [];
+      powWorkerErrorHandlers = [];
     }
 
     function stopMining(reason = "Mining stopped by user.") {
@@ -747,6 +872,7 @@
 
         cleanupPowWorkers();
         let resolved = false;
+        let sawAnyWorkerMessage = false;
 
         // Register this promise so stopMining() can cancel it.
         activePowReject = (err) => {
@@ -759,8 +885,28 @@
 
         for (let i = 0; i < numWorkers; i++) {
           const w = new Worker(powWorkerUrl);
+          const errHandler = (ev) => {
+            if (!resolved) {
+              resolved = true;
+              cleanupPowWorkers();
+              activePowReject = null;
+              const msg = (ev && ev.message) ? ev.message : "PoW worker crashed.";
+              reject(new Error(msg + " (Likely: blocked SHA256 importScripts or a worker runtime error.)"));
+            }
+          };
+          w.addEventListener("error", errHandler);
           const handler = (event) => {
-            const { nonce, time, rate, done } = event.data;
+            const { nonce, time, rate, done, fatal, error } = (event && event.data) ? event.data : {};
+            if (fatal) {
+              if (!resolved) {
+                resolved = true;
+                cleanupPowWorkers();
+                activePowReject = null;
+                reject(new Error(error || "PoW worker reported a fatal error."));
+              }
+              return;
+            }
+            sawAnyWorkerMessage = true;
             if (rate && isFinite(rate)) {
               addHashrateSample(rate);
             }
@@ -774,8 +920,18 @@
           w.addEventListener("message", handler);
           powWorkers.push(w);
           powWorkerHandlers.push(handler);
+          powWorkerErrorHandlers.push(errHandler);
           w.postMessage({ message, bits, startNonce: i, step: numWorkers });
         }
+
+        // Watchdog: if workers never post anything, they likely failed to start (e.g. importScripts blocked).
+        setTimeout(() => {
+          if (!resolved && !sawAnyWorkerMessage) {
+            try {
+              if (activePowReject) activePowReject(new Error("PoW worker did not start. Likely blocked script import (adblock/privacy shields). Please self-host sha256.min.js next to index.html."));
+            } catch (e) {}
+          }
+        }, 1500);
       });
     }
 
@@ -1008,51 +1164,346 @@ function setMiningActive(active) {
       }, 1700);
     }
 
-    function updateVisibility() {
-      const signupSection = document.getElementById("signup-section");
-      const earnSection = document.getElementById("earn-section");
-      const statusSection = document.getElementById("status-panel");
-      const accountSection = document.getElementById("account-section");
-      const sendSection = document.getElementById("send-section");
-      const redeemSection = document.getElementById("redeem-section");
-      const dexSection = document.getElementById("dex-section");
+// ---------------------------
+// QR helpers (Show QR + Scan QR)
+// ---------------------------
+let qrModalText = "";
+let qrScanStream = null;
+let qrScanStop = null;
+let qrScanTargetInputId = null;
 
-      // Account management (including private key import) should always be visible
-      if (accountSection) accountSection.style.display = "";
+function openQrModal(title, text) {
+  const overlay = document.getElementById("qr-modal");
+  const titleEl = document.getElementById("qr-modal-title");
+  const textEl = document.getElementById("qr-modal-text");
+  const qrBox = document.getElementById("qr-box");
+  const canvas = document.getElementById("qr-canvas");
+  const hintEl = document.getElementById("qr-render-hint");
+  const closeBtn = document.getElementById("btn-qr-close");
+  const copyBtn = document.getElementById("btn-qr-copy");
 
-      if (accountId) {
-        if (signupSection) signupSection.style.display = "none";
-        if (statusSection) statusSection.style.display = "";
-        if (earnSection) earnSection.style.display = "";
-        if (sendSection) sendSection.style.display = "";
-        if (redeemSection) redeemSection.style.display = "";
-        if (dexSection) dexSection.style.display = "";
-      } else {
-        if (signupSection) signupSection.style.display = "";
-        if (statusSection) statusSection.style.display = "none";
-        if (earnSection) earnSection.style.display = "none";
-        if (sendSection) sendSection.style.display = "none";
-        if (redeemSection) redeemSection.style.display = "none";
-        if (dexSection) dexSection.style.display = "none";
+  if (!overlay || !titleEl || !textEl) return;
+
+  qrModalText = String(text || "");
+  titleEl.textContent = title || "QR";
+  textEl.textContent = qrModalText;
+
+  overlay.style.display = "flex";
+
+  // Reset previous render state
+  if (qrBox) {
+    qrBox.innerHTML = "";
+    qrBox.style.display = "none";
+  }
+  if (canvas) {
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+    canvas.style.display = "none";
+  }
+  if (hintEl) {
+    hintEl.textContent = "";
+    hintEl.style.display = "none";
+  }
+
+  // Render QR (support both node-qrcode and qrcodejs APIs)
+  try {
+    if (!window.QRCode) {
+      console.warn("QRCode lib not available");
+      if (hintEl) {
+        hintEl.textContent = "QR library not loaded. Please self-host qrcode.min.js (e.g. ./qrcode.min.js next to index.html) and make sure it is served with Content-Type application/javascript.";
+        hintEl.style.display = "";
       }
+    } else {
+      const opts = {
+        margin: 2,
+        width: 260,
+        color: {
+          dark: "#111827", // dark modules
+          light: "#ffffff" // light background
+        }
+      };
 
-      // Hide the info note when an account is loaded
-      const infoAccountReqNote = document.getElementById("info-account-required-note");
-      if (infoAccountReqNote) {
-        infoAccountReqNote.style.display = accountId ? "none" : "";
+      // A) "qrcode" (node-qrcode) style API: QRCode.toCanvas / QRCode.toDataURL
+      if (typeof window.QRCode.toCanvas === "function" && canvas) {
+        canvas.style.display = "";
+        window.QRCode.toCanvas(canvas, qrModalText, opts, function (err) {
+          if (err) {
+            console.error(err);
+            if (hintEl) {
+              hintEl.textContent = "QR render failed: " + err;
+              hintEl.style.display = "";
+            }
+          }
+        });
       }
-
-      // Mobile-only UI (sticky topbar + quick actions)
-      const isMobile = window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
-      const mobileTopbar = document.getElementById("mobile-topbar");
-      const mobileQuick = document.getElementById("mobile-quick-actions");
-      const mobileMenu = document.getElementById("mobile-menu");
-
-      const showMobile = !!(accountId && isMobile);
-      if (mobileTopbar) mobileTopbar.style.display = showMobile ? "" : "none";
-      if (mobileQuick) mobileQuick.style.display = showMobile ? "" : "none";
-      if (!showMobile && mobileMenu) mobileMenu.style.display = "none";
+      else if (typeof window.QRCode.toDataURL === "function" && qrBox) {
+        // If someone ships only toDataURL, render into an <img> we create on the fly.
+        window.QRCode.toDataURL(qrModalText, opts, function (err, url) {
+          if (err) {
+            console.error(err);
+            if (hintEl) {
+              hintEl.textContent = "QR render failed: " + err;
+              hintEl.style.display = "";
+            }
+            return;
+          }
+          const im = document.createElement("img");
+          im.alt = "QR";
+          im.src = url;
+          im.style.width = "260px";
+          im.style.height = "260px";
+          im.style.borderRadius = "10px";
+          qrBox.appendChild(im);
+          qrBox.style.display = "";
+        });
+      }
+      // B) "qrcodejs" style API: new QRCode(element, options)
+      else if (typeof window.QRCode === "function" && qrBox) {
+        qrBox.style.display = "";
+        // qrcodejs expects colorDark/colorLight and does not understand our opts object
+        const qropts = {
+          text: qrModalText,
+          width: 260,
+          height: 260,
+          colorDark: "#111827",
+          colorLight: "#ffffff",
+        };
+        try {
+          // If CorrectLevel exists, use a sensible default.
+          if (window.QRCode.CorrectLevel && window.QRCode.CorrectLevel.M) {
+            qropts.correctLevel = window.QRCode.CorrectLevel.M;
+          }
+          new window.QRCode(qrBox, qropts);
+        } catch (e) {
+          console.error(e);
+          if (hintEl) {
+            hintEl.textContent = "QR render failed: " + e;
+            hintEl.style.display = "";
+          }
+        }
+      }
+      else {
+        if (hintEl) {
+          hintEl.textContent = "QR library loaded, but no renderer available (unexpected build). Please ensure you are serving a browser build that provides QRCode.toCanvas(...) or use a qrcodejs build.";
+          hintEl.style.display = "";
+        }
+      }
     }
+  } catch (e) {
+    console.error(e);
+    if (hintEl) {
+      hintEl.textContent = "QR error: " + e;
+      hintEl.style.display = "";
+    }
+  }
+
+  const close = () => closeQrModal();
+  if (closeBtn) closeBtn.onclick = close;
+  overlay.onclick = (ev) => {
+    if (ev.target === overlay) close();
+  };
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      copyAddressToClipboard(qrModalText);
+    };
+  }
+}
+
+function closeQrModal() {
+  const overlay = document.getElementById("qr-modal");
+  if (overlay) overlay.style.display = "none";
+
+  const qrBox = document.getElementById("qr-box");
+  const canvas = document.getElementById("qr-canvas");
+  const hintEl = document.getElementById("qr-render-hint");
+
+  if (qrBox) {
+    qrBox.innerHTML = "";
+    qrBox.style.display = "none";
+  }
+  if (canvas) {
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+    canvas.style.display = "none";
+  }
+  if (hintEl) {
+    hintEl.textContent = "";
+    hintEl.style.display = "none";
+  }
+
+  qrModalText = "";
+}
+
+function setQrScanStatus(msg) {
+  const el = document.getElementById("qr-scan-status");
+  if (el) el.textContent = msg || "";
+}
+
+async function openQrScanner(targetInputId) {
+  qrScanTargetInputId = targetInputId;
+  const overlay = document.getElementById("qr-scan-modal");
+  const video = document.getElementById("qr-video");
+  const closeBtn = document.getElementById("btn-qr-scan-close");
+  const stopBtn = document.getElementById("btn-qr-scan-stop");
+
+  if (!overlay || !video) return;
+
+  // Prefer native BarcodeDetector if available (Chrome/Brave/Android works well)
+  const hasDetector = !!window.BarcodeDetector;
+  if (!hasDetector) {
+    setQrScanStatus("QR scanning is not supported in this browser (BarcodeDetector missing). Try Chrome/Brave or the installed PWA.");
+    overlay.style.display = "flex";
+    // Make sure the camera modal is immediately visible on mobile
+    try {
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    } catch (e) {
+      window.scrollTo(0, 0);
+    }
+
+// Prevent background scrolling while the modal is open
+try { document.body.style.overflow = "hidden"; } catch (e) {}
+
+    if (closeBtn) closeBtn.onclick = () => closeQrScanner();
+    if (stopBtn) stopBtn.onclick = () => closeQrScanner();
+    overlay.onclick = (ev) => { if (ev.target === overlay) closeQrScanner(); };
+    return;
+  }
+
+  overlay.style.display = "flex";
+  setQrScanStatus("Requesting camera…");
+
+  // Make sure the camera modal is immediately visible on mobile
+  try {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  } catch (e) {
+    window.scrollTo(0, 0);
+  }
+
+  // Prevent background scrolling while the modal is open
+  try { document.body.style.overflow = "hidden"; } catch (e) {}
+
+  const close = () => closeQrScanner();
+  if (closeBtn) closeBtn.onclick = close;
+  if (stopBtn) stopBtn.onclick = close;
+  overlay.onclick = (ev) => { if (ev.target === overlay) close(); };
+
+  try {
+    qrScanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" },
+      audio: false
+    });
+    video.srcObject = qrScanStream;
+    await video.play();
+
+    setQrScanStatus("Point the camera at a QR code…");
+
+    const detector = new BarcodeDetector({ formats: ["qr_code"] });
+    let stopped = false;
+    qrScanStop = () => { stopped = true; };
+
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const barcodes = await detector.detect(video);
+        if (barcodes && barcodes.length > 0) {
+          const val = String(barcodes[0].rawValue || "").trim();
+          if (val) {
+            const input = document.getElementById(qrScanTargetInputId);
+            if (input) input.value = val;
+            setQrScanStatus("Scanned ✅");
+            setTimeout(() => closeQrScanner(), 250);
+            return;
+          }
+        }
+      } catch (e) {
+        // transient errors while warming up are ok
+      }
+      requestAnimationFrame(tick);
+    };
+
+    requestAnimationFrame(tick);
+  } catch (e) {
+    console.error(e);
+    setQrScanStatus("Camera error: " + e);
+  }
+}
+
+function closeQrScanner() {
+  const overlay = document.getElementById("qr-scan-modal");
+  const video = document.getElementById("qr-video");
+  if (qrScanStop) {
+    try { qrScanStop(); } catch (e) {}
+    qrScanStop = null;
+  }
+  if (qrScanStream) {
+    try { qrScanStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    qrScanStream = null;
+  }
+  if (video) {
+    try { video.pause(); } catch (e) {}
+    video.srcObject = null;
+  }
+  // Restore background scrolling
+  try { document.body.style.overflow = ""; } catch (e) {}
+  if (overlay) overlay.style.display = "none";
+  setQrScanStatus("");
+  qrScanTargetInputId = null;
+}
+
+function updateVisibility() {
+  // Keep a CSS-readable flag in sync (also helps if later JS errors prevent manual style toggles)
+  try {
+    document.documentElement.dataset.hasAccount = accountId ? "1" : "0";
+  } catch (e) {}
+
+  const isMobile = window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
+
+  const signupSection = document.getElementById("signup-section");
+  const earnSection = document.getElementById("earn-section");
+  const statusSection = document.getElementById("status-panel");
+  const desktopStatusBlock = document.getElementById("desktop-status-block");
+  const accountSection = document.getElementById("account-section");
+  const sendSection = document.getElementById("send-section");
+  const redeemSection = document.getElementById("redeem-section");
+  const dexSection = document.getElementById("dex-section");
+
+  // Account management (including private key import) should always be visible
+  if (accountSection) accountSection.style.display = "";
+
+  if (accountId) {
+    if (signupSection) signupSection.style.display = "none";
+    if (desktopStatusBlock) desktopStatusBlock.style.display = isMobile ? "none" : "";
+    if (statusSection) statusSection.style.display = isMobile ? "none" : "";
+    if (earnSection) earnSection.style.display = "";
+    if (sendSection) sendSection.style.display = "";
+    if (redeemSection) redeemSection.style.display = "";
+    if (dexSection) dexSection.style.display = "";
+  } else {
+    if (signupSection) signupSection.style.display = "";
+    if (desktopStatusBlock) desktopStatusBlock.style.display = "none";
+    if (statusSection) statusSection.style.display = "none";
+    if (earnSection) earnSection.style.display = "none";
+    if (sendSection) sendSection.style.display = "none";
+    if (redeemSection) redeemSection.style.display = "none";
+    if (dexSection) dexSection.style.display = "none";
+  }
+
+  // Hide the info note when an account is loaded
+  const infoAccountReqNote = document.getElementById("info-account-required-note");
+  if (infoAccountReqNote) {
+    infoAccountReqNote.style.display = accountId ? "none" : "";
+  }
+
+  // Mobile-only UI (sticky topbar + quick actions)
+  const mobileTopbar = document.getElementById("mobile-topbar");
+  const mobileQuick = document.getElementById("mobile-quick-actions");
+  const mobileMenu = document.getElementById("mobile-menu");
+
+  const showMobile = !!(accountId && isMobile);
+  if (mobileTopbar) mobileTopbar.style.display = showMobile ? "" : "none";
+  if (mobileQuick) mobileQuick.style.display = showMobile ? "" : "none";
+  if (!showMobile && mobileMenu) mobileMenu.style.display = "none";
+}
 
 
     function setupToggleNotes() {
@@ -1061,30 +1512,45 @@ function setMiningActive(active) {
         const targetId = btn.getAttribute('data-toggle-target');
         const labelShow = btn.getAttribute('data-toggle-label-show') || 'Show info';
         const labelHide = btn.getAttribute('data-toggle-label-hide') || 'Hide';
+        btn.type = 'button';
         const target = targetId ? document.getElementById(targetId) : null;
         if (!target) return;
 
-        // Ensure initial state is collapsed
-        btn.setAttribute('aria-expanded', 'false');
-        btn.textContent = labelShow;
-        target.style.display = 'none';
+        const isMobile = window.matchMedia && window.matchMedia("(max-width: 640px)").matches;
+        const def = (btn.getAttribute('data-default-open') || '').toLowerCase();
+        const shouldOpen = (def === 'true') || (def === 'desktop' && !isMobile);
 
-        btn.addEventListener('click', () => {
-          const isOpen = target.style.display !== 'none';
+        if (shouldOpen) {
+          target.setAttribute('data-open', '1');
+          //target.style.display = 'block';
+          btn.setAttribute('aria-expanded', 'true');
+          btn.textContent = labelHide;
+        } else {
+          target.removeAttribute('data-open');
+          //target.style.display = 'none';
+          btn.setAttribute('aria-expanded', 'false');
+          btn.textContent = labelShow;
+        }
+
+        // IMPORTANT: do not stack listeners
+        btn.onclick = () => {
+          const isOpen = target.getAttribute('data-open') === '1';
           if (isOpen) {
-            target.style.display = 'none';
+            target.removeAttribute('data-open');
+            //target.style.display = 'none';
             btn.setAttribute('aria-expanded', 'false');
             btn.textContent = labelShow;
           } else {
-            target.style.display = '';
+            target.setAttribute('data-open', '1');
+            //target.style.display = 'block';
             btn.setAttribute('aria-expanded', 'true');
             btn.textContent = labelHide;
           }
-        });
+        };
       });
     }
 
-    function shortenAccountIdTiny(s) {
+function shortenAccountIdTiny(s) {
   if (!s) return "-";
   const str = String(s);
   if (str.length <= 14) return str;
@@ -1092,15 +1558,51 @@ function setMiningActive(active) {
 }
 
 function setupMobileNav() {
-  // Gear menu toggle
+  // Guard: ensure we only attach global listeners once
+  if (!window.__mobileNavInit) window.__mobileNavInit = { outsideClickBound: false };
+
   const gear = document.getElementById("btn-mobile-gear");
   const menu = document.getElementById("mobile-menu");
+
   if (gear && menu) {
-    gear.addEventListener("click", () => {
-      menu.style.display = (menu.style.display === "none" || menu.style.display === "")
-        ? "block"
-        : "none";
-    });
+    if (!menu.style.display) menu.style.display = "none";
+
+    // Idempotent: overwrite handler instead of addEventListener
+    gear.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const isOpen = (menu.style.display === "block");
+      menu.style.display = isOpen ? "none" : "block";
+    };
+
+    // Close when tapping outside (bind only once)
+    if (!window.__mobileNavInit.outsideClickBound) {
+      window.__mobileNavInit.outsideClickBound = true;
+      document.addEventListener("click", (ev) => {
+        const g = document.getElementById("btn-mobile-gear");
+        const m = document.getElementById("mobile-menu");
+        if (!m || m.style.display !== "block") return;
+        if (g && ev.target === g) return;
+        if (m.contains(ev.target)) return;
+        m.style.display = "none";
+      });
+    }
+  } else {
+    if (!gear) console.warn("Mobile gear button not found: #btn-mobile-gear");
+    if (!menu) console.warn("Mobile menu container not found: #mobile-menu");
+  }
+
+  // Mobile: show address QR
+  const showQr = document.getElementById("btn-mobile-show-qr");
+  if (showQr) {
+    showQr.onclick = (ev) => {
+      ev.preventDefault();
+      if (lastAccountData && lastAccountData.account_id) {
+        openQrModal("Address", lastAccountData.account_id);
+      } else if (accountId) {
+        openQrModal("Address", accountId);
+      }
+    };
   }
 
   const go = (id) => {
@@ -1109,17 +1611,39 @@ function setupMobileNav() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  // Quick actions
-  document.getElementById("btn-mobile-go-earn")?.addEventListener("click", () => go("earn-section"));
-  document.getElementById("btn-mobile-go-send")?.addEventListener("click", () => go("send-section"));
-  document.getElementById("btn-mobile-go-redeem")?.addEventListener("click", () => go("redeem-section"));
+  const b1 = document.getElementById("btn-mobile-go-earn");
+  const b2 = document.getElementById("btn-mobile-go-send");
+  const b3 = document.getElementById("btn-mobile-go-redeem");
+  if (b1) b1.onclick = (ev) => { ev.preventDefault(); go("earn-section"); };
+  if (b2) b2.onclick = (ev) => { ev.preventDefault(); go("send-section"); };
+  if (b3) b3.onclick = (ev) => { ev.preventDefault(); go("redeem-section"); };
 }
 
-// Init mobile navigation once (script is at end of body, so DOM is ready)
-setupMobileNav();
+// Wire QR scan buttons (keep this block error-free; a ReferenceError here stops all subsequent JS, incl. loadConfig()).
+const scanSend = document.getElementById("btn-scan-send");
+if (scanSend) scanSend.onclick = (ev) => { ev.preventDefault(); openQrScanner("send-to-address"); };
 
-// Re-evaluate visibility when viewport changes (mobile/desktop)
-window.addEventListener("resize", () => updateVisibility());
+const scanRedeem = document.getElementById("btn-scan-redeem");
+if (scanRedeem) scanRedeem.onclick = (ev) => { ev.preventDefault(); openQrScanner("redeem-address"); };
+
+const scanImport = document.getElementById("btn-scan-import");
+if (scanImport) scanImport.onclick = (ev) => { ev.preventDefault(); openQrScanner("import-account"); };
+
+// One-time UI initialization (idempotent)
+if (!window.__uiInitDone) {
+  window.__uiInitDone = true;
+  try { setupToggleNotes(); } catch (e) {}
+  try { setupMobileNav(); } catch (e) {}
+  try { updateVisibility(); } catch (e) {}
+}
+
+// Bind resize handler only once
+if (!window.__uiResizeBound) {
+  window.__uiResizeBound = true;
+  window.addEventListener("resize", () => updateVisibility());
+}
+
+// (moved) UI init + resize binding are handled above (guarded)
 
 
 
@@ -1401,6 +1925,8 @@ window.addEventListener("resize", () => updateVisibility());
           statusAddrEl.style.display = "none";
           statusAddrEl.textContent = "";
         }
+        const me = document.getElementById("mobile-earned");
+        if (me) me.textContent = "Earned today: –";
         return;
       }
       try {
@@ -1435,6 +1961,7 @@ window.addEventListener("resize", () => updateVisibility());
         const addressHtml = `
           Address: <span class="mono" id="address-text">${data.account_id}</span>
           <button type="button" class="icon-button btn-copy-address" title="Copy address to clipboard">📋</button>
+          <button type="button" class="icon-button btn-show-qr" title="Show address as QR">🔳</button>
         `;
 
         // Account section (Account management)
@@ -1454,12 +1981,20 @@ window.addEventListener("resize", () => updateVisibility());
         document.querySelectorAll(".btn-copy-address").forEach((btn) => {
           btn.onclick = () => copyAddressToClipboard(data.account_id);
         });
+
+        document.querySelectorAll(".btn-show-qr").forEach((btn) => {
+          btn.onclick = () => openQrModal("Address", data.account_id);
+        });
+
         currentAddress = data.account_id;
 
         // Update mobile sticky topbar text + copy
         const mb = document.getElementById("mobile-balance");
+        const me = document.getElementById("mobile-earned");
         const ma = document.getElementById("mobile-address");
+
         if (mb) mb.textContent = `Balance: ${data.credits} HCC`;
+        if (me) me.textContent = `Earned today: ${data.earned_today}/${data.daily_earn_cap}`;
         if (ma) ma.textContent = `Address: ${shortenAccountIdTiny(data.account_id)}`;
 
         const btnMobileCopy = document.getElementById("btn-mobile-copy");
@@ -2349,6 +2884,10 @@ async function cancelDexOrder(orderId) {
     // Initial UI state
     setupToggleNotes();
     setupMobileNav();
+    window.addEventListener("resize", () => updateVisibility());
+
+    updateVisibility();
+    refreshRedeemLog();
 
     // Initialize worker-threads input based on hardware concurrency
     (function initPowThreadsInput() {
@@ -2373,7 +2912,6 @@ async function cancelDexOrder(orderId) {
 
     updateVisibility();
     refreshRedeemLog();
-    setupMobileNav();
 
     // If we have a pending signup submit and no account yet, show retry UI.
     if (!accountId) {
