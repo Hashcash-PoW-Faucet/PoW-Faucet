@@ -6,6 +6,7 @@ import os
 import secrets
 import sqlite3
 import time
+import threading
 import json
 import requests
 from dataclasses import dataclass
@@ -52,6 +53,59 @@ else:
 
 STAMP_HMAC_KEY = os.getenv("STAMP_HMAC_KEY", "change-me-stamp-key").encode()
 IPTAG_HMAC_KEY = os.getenv("IPTAG_HMAC_KEY", "change-me-iptag-key").encode()
+
+# Rate limiting (in-memory, single-process). For multi-worker deployments, use Redis.
+SUBMIT_RL_MAX = int(os.getenv("SUBMIT_RL_MAX", "30"))                 # max submit attempts per window
+SUBMIT_RL_WINDOW_SEC = int(os.getenv("SUBMIT_RL_WINDOW_SEC", "10"))  # window length (seconds)
+# ---------------------------
+# In-memory rate limiter
+# (OK for 1 process; use Redis for multi-worker)
+# ---------------------------
+@dataclass
+class _RlState:
+    window_start: int
+    count: int
+
+
+class FixedWindowRateLimiter:
+    """Very small in-memory rate limiter (fixed window).
+
+    Keyed by an arbitrary string (e.g. ip tag or account+ip).
+
+    This protects endpoints like /submit_pow against request-spam.
+    """
+
+    def __init__(self, max_requests: int, window_sec: int):
+        self.max_requests = max(1, int(max_requests))
+        self.window_sec = max(1, int(window_sec))
+        self._lock = threading.Lock()
+        self._state: dict[str, _RlState] = {}
+
+    def allow(self, key: str) -> tuple[bool, int]:
+        """Return (allowed, retry_after_sec)."""
+        now = now_unix()
+        with self._lock:
+            st = self._state.get(key)
+            if st is None:
+                self._state[key] = _RlState(window_start=now, count=1)
+                return True, 0
+
+            # Reset window if expired
+            if now - st.window_start >= self.window_sec:
+                st.window_start = now
+                st.count = 1
+                return True, 0
+
+            # Still in same window
+            if st.count >= self.max_requests:
+                retry_after = max(1, st.window_start + self.window_sec - now)
+                return False, retry_after
+
+            st.count += 1
+            return True, 0
+
+
+SUBMIT_RL = FixedWindowRateLimiter(SUBMIT_RL_MAX, SUBMIT_RL_WINDOW_SEC)
 
 # PoW parameters
 CLAIM_BITS = int(os.getenv("CLAIM_BITS", "26"))          # ~low effort
@@ -977,6 +1031,15 @@ def challenge(data: ChallengeIn, req: Request):
 def submit_pow(data: SubmitPowIn, req: Request):
     account_id = auth_account(req)
     ipt = ip_tag(get_client_ip(req))
+
+    # Rate limit submit attempts per IP tag (protects against submit spam / accidental loops)
+    allowed, retry_after = SUBMIT_RL.allow(ipt)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"rate limited (retry after {retry_after}s)",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     # 1) verify signature
     expected_sig = hmac_sha256(STAMP_HMAC_KEY, data.stamp)

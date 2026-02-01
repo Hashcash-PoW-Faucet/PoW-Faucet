@@ -1911,6 +1911,44 @@ if (!window.__uiResizeBound) {
       }
     }
 
+    // ---- Auto-mine resilience helpers (Safari / background tabs) ----
+    // When the tab becomes visible again, resume auto-mine if it was enabled
+    // but the loop is no longer running (e.g. after a background error or timer freeze).
+    if (!window.__autoMineVisibilityBound) {
+      window.__autoMineVisibilityBound = true;
+      document.addEventListener("visibilitychange", () => {
+        // Only act when the tab becomes visible again
+        if (!document.hidden) {
+          // autoMineEnabled: user requested auto-mine
+          // accountId: we still have a valid account
+          // !autoMineRunning: loop is not currently active
+          // !miningActive: we are not in the middle of a manual/claim PoW
+          if (autoMineEnabled && accountId && !autoMineRunning && !miningActive) {
+            setStatus("Tab is active again – resuming auto-mine…");
+            autoMineLoop();
+          }
+        }
+      });
+    }
+
+    // Lightweight watchdog: in case the loop stopped due to an error while
+    // auto-mine is still enabled, periodically check and restart it when
+    // the tab is in the foreground.
+    if (!window.__autoMineWatchdogBound) {
+      window.__autoMineWatchdogBound = true;
+      setInterval(() => {
+        // Do not wake the miner while the tab is backgrounded; Safari
+        // heavily throttles timers there anyway.
+        if (document.hidden) {
+          return;
+        }
+        if (autoMineEnabled && accountId && !autoMineRunning && !miningActive) {
+          setStatus("Watchdog: restarting auto-mine loop…");
+          autoMineLoop();
+        }
+      }, 60000); // check at most once per minute
+    }
+
     async function refreshAccount() {
       if (!accountId) {
         setAccountInfo();
