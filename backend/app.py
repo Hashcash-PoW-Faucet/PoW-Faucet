@@ -108,13 +108,11 @@ class FixedWindowRateLimiter:
 SUBMIT_RL = FixedWindowRateLimiter(SUBMIT_RL_MAX, SUBMIT_RL_WINDOW_SEC)
 
 # PoW parameters
-CLAIM_BITS = int(os.getenv("CLAIM_BITS", "26"))          # normal mining mode
-EXTREME_BITS = int(os.getenv("EXTREME_BITS", "35"))      # extreme mode
-SIGNUP_BITS = int(os.getenv("SIGNUP_BITS", "28"))        # ~low effort account creation
+CLAIM_BITS = int(os.getenv("CLAIM_BITS", "26"))          # ~low effort
+SIGNUP_BITS = int(os.getenv("SIGNUP_BITS", "28"))        # harder than claim
 STAMP_TTL_SEC = int(os.getenv("STAMP_TTL_SEC", "3600"))   # stamp expiry
-COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))     # cooldown in normal mode
+COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))     # 1 min cooldown
 DAILY_EARN_CAP = int(os.getenv("DAILY_EARN_CAP", "20"))  # max credits/day
-EXTREME_DAILY_CAP = int(os.getenv("EXTREME_DAILY_CAP", "300"))  # max credits/day in extreme mode
 MAX_SIGNUPS_PER_IP_PER_DAY = int(os.getenv("MAX_SIGNUPS_PER_IP_PER_DAY", "2"))  # max new accounts per IP tag per day
 DEX_ADMIN_TOKEN = os.getenv("DEX_ADMIN_TOKEN", "")
 DEX_MIN_CONFS = int(os.getenv("DEX_MIN_CONFS", "6"))
@@ -714,67 +712,45 @@ def require_admin(req: Request) -> None:
 
 # Atomic accept of seq (prevents replay/races)
 
-def accept_pow_and_credit(
-    con: sqlite3.Connection,
-    account_id: str,
-    expected_seq: int,
-    mode: str = "normal",  # "normal" oder "extreme"
-) -> bool:
+def accept_pow_and_credit(con: sqlite3.Connection, account_id: str, expected_seq: int) -> bool:
     ts = now_unix()
     dk = day_key(ts)
 
     # Reset daily counter if day changed
     reset_daily_if_needed(con, account_id)
 
+    # Enforce daily cap + cooldown + atomic seq increment
+    # We do it in a transaction to be safe.
     con.execute("BEGIN IMMEDIATE;")
     try:
         row = con.execute(
-            "SELECT next_seq, credits, cooldown_until, earn_day, earned_today "
-            "FROM accounts WHERE account_id=?",
-            (account_id,),
+            "SELECT next_seq, credits, cooldown_until, earn_day, earned_today FROM accounts WHERE account_id=?",
+            (account_id,)
         ).fetchone()
         if not row:
             raise ValueError("no account")
-
         next_seq, credits, cooldown_until, earn_day, earned_today = row
 
         if next_seq != expected_seq:
             con.execute("ROLLBACK;")
             return False
 
-        # Mode-dependent checks
-        if mode == "normal":
-            if cooldown_until > ts:
-                con.execute("ROLLBACK;")
-                raise HTTPException(status_code=429, detail="cooldown")
-            if earned_today >= DAILY_EARN_CAP:
-                con.execute("ROLLBACK;")
-                raise HTTPException(status_code=429, detail="daily cap reached")
-            new_cooldown = ts + COOLDOWN_SEC
-
-        elif mode == "extreme":
-            # No cooldown in extreme mode, but global higher daily cap
-            if earned_today >= EXTREME_DAILY_CAP:
-                con.execute("ROLLBACK;")
-                raise HTTPException(status_code=429, detail="extreme daily cap reached")
-            # Do not touch cooldown; keep whatever was set by normal mining
-            new_cooldown = cooldown_until
-
-        else:
+        if cooldown_until > ts:
             con.execute("ROLLBACK;")
-            raise ValueError(f"unknown mode: {mode}")
+            raise HTTPException(status_code=429, detail="cooldown")
 
-        con.execute(
-            """
+        if earned_today >= DAILY_EARN_CAP:
+            con.execute("ROLLBACK;")
+            raise HTTPException(status_code=429, detail="daily cap reached")
+
+        con.execute("""
             UPDATE accounts
             SET next_seq = next_seq + 1,
                 credits  = credits + 1,
                 cooldown_until = ?,
                 earned_today = earned_today + 1
             WHERE account_id=? AND next_seq=?
-            """,
-            (new_cooldown, account_id, expected_seq),
-        )
+        """, (ts + COOLDOWN_SEC, account_id, expected_seq))
 
         if con.total_changes == 0:
             con.execute("ROLLBACK;")
@@ -1051,55 +1027,12 @@ def challenge(data: ChallengeIn, req: Request):
         con.close()
 
 
-@app.post("/challenge_extreme", response_model=ChallengeOut)
-def challenge_extreme(req: Request):
-    account_id = auth_account(req)
-    ipt = ip_tag(get_client_ip(req))
-
-    con = db()
-    try:
-        row = get_account(con, account_id)
-        if not row:
-            raise HTTPException(status_code=401, detail="unknown account")
-
-        # daily reset if needed
-        reset_daily_if_needed(con, account_id)
-
-        # read current state
-        _, _, next_seq, credits, cooldown_until, earn_day, earned_today = row
-        ts = now_unix()
-
-        # EXTREME mode: no cooldown; only a higher daily cap
-        if earned_today >= EXTREME_DAILY_CAP:
-            raise HTTPException(status_code=429, detail="extreme daily cap reached")
-
-        # IP lock: deny parallel mining from same IP tag (normal + extreme teilen sich das Lock)
-        if not IP_LOCKS.try_acquire(ipt, account_id, STAMP_TTL_SEC):
-            raise HTTPException(status_code=429, detail="ip busy (no parallel mining)")
-
-        exp = ts + STAMP_TTL_SEC
-        bits = EXTREME_BITS
-        # Important: distinguish via action
-        stamp = make_stamp(
-            action="earn_extreme",
-            account_id=account_id,
-            seq=next_seq,
-            bits=bits,
-            exp=exp,
-            ipt=ipt,
-        )
-        sig = hmac_sha256(STAMP_HMAC_KEY, stamp)
-        return ChallengeOut(stamp=stamp, sig=sig, bits=bits, expires_at=exp)
-    finally:
-        con.close()
-
-
 @app.post("/submit_pow", response_model=SubmitPowOut)
 def submit_pow(data: SubmitPowIn, req: Request):
     account_id = auth_account(req)
     ipt = ip_tag(get_client_ip(req))
 
-    # Rate limit submit attempts per IP tag
+    # Rate limit submit attempts per IP tag (protects against submit spam / accidental loops)
     allowed, retry_after = SUBMIT_RL.allow(ipt)
     if not allowed:
         raise HTTPException(
@@ -1124,15 +1057,9 @@ def submit_pow(data: SubmitPowIn, req: Request):
     if kv["ip"] != ipt:
         raise HTTPException(status_code=400, detail="ip mismatch")
     if kv["exp"] < now_unix():
+        # release lock (best-effort)
         IP_LOCKS.release(ipt, account_id)
         raise HTTPException(status_code=400, detail="expired")
-
-    # Determine mode from action
-    act = str(kv.get("act", "earn_credit"))
-    if act == "earn_extreme":
-        mode = "extreme"
-    else:
-        mode = "normal"
 
     # 3) verify PoW
     if not pow_ok(data.stamp, data.nonce, kv["bits"]):
@@ -1141,20 +1068,17 @@ def submit_pow(data: SubmitPowIn, req: Request):
     # 4) atomically accept seq and credit
     con = db()
     try:
-        ok = accept_pow_and_credit(con, account_id, kv["seq"], mode=mode)
+        ok = accept_pow_and_credit(con, account_id, kv["seq"])
         if not ok:
             raise HTTPException(status_code=409, detail="stale seq / replay")
 
+        # fetch updated state for response
         row = get_account(con, account_id)
         _, _, next_seq, credits, cooldown_until, _, _ = row
-        return SubmitPowOut(
-            ok=True,
-            credits=credits,
-            next_seq=next_seq,
-            cooldown_until=cooldown_until,
-        )
+        return SubmitPowOut(ok=True, credits=credits, next_seq=next_seq, cooldown_until=cooldown_until)
     finally:
         con.close()
+        # release IP lock on success (best-effort)
         IP_LOCKS.release(ipt, account_id)
 
 
