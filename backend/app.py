@@ -269,7 +269,7 @@ def call_coin_rpc(currency: str, method: str, params: Optional[list] = None):
             url,
             json=payload,
             auth=(user, password),
-            timeout=5,
+            timeout=15,
         )
         resp.raise_for_status()
         data = resp.json()
