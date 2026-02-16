@@ -57,6 +57,8 @@ IPTAG_HMAC_KEY = os.getenv("IPTAG_HMAC_KEY", "change-me-iptag-key").encode()
 # Rate limiting (in-memory, single-process). For multi-worker deployments, use Redis.
 SUBMIT_RL_MAX = int(os.getenv("SUBMIT_RL_MAX", "30"))                 # max submit attempts per window
 SUBMIT_RL_WINDOW_SEC = int(os.getenv("SUBMIT_RL_WINDOW_SEC", "10"))  # window length (seconds)
+
+
 # ---------------------------
 # In-memory rate limiter
 # (OK for 1 process; use Redis for multi-worker)
@@ -200,11 +202,13 @@ def tail_jsonl_lines(path: str, n: int) -> List[str]:
 #  }
 #}
 
+
 # ---------------------------
 # Coin config, validation, and redeem queue helpers
 # ---------------------------
 # Keep your env default
 COINS_CONFIG_PATH = os.getenv("COINS_CONFIG_PATH", str(BASE_DIR / "coins.json"))
+
 
 # Resolve relative paths against the directory this file lives in (backend/)
 def _resolve_backend_path(p: str) -> Path:
@@ -212,6 +216,7 @@ def _resolve_backend_path(p: str) -> Path:
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
+
 
 def load_coins_config() -> dict:
     """
@@ -237,6 +242,7 @@ def load_coins_config() -> dict:
     except Exception as e:
         print(f"[coins] failed to load config '{cfg_path}': {e}")
         return {}
+
 
 COINS_CONFIG = load_coins_config()
 
@@ -469,10 +475,22 @@ def now_unix() -> int:
     return int(time.time())
 
 
+def _is_hex_40(s: str) -> bool:
+    s = (s or "").strip()
+    if len(s) != 40:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except Exception:
+        return False
+
+
 def day_key(ts: Optional[int] = None) -> str:
     # simple UTC day key YYYY-MM-DD
     ts = ts or now_unix()
     return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
 
 def _safe_json(obj: Any) -> str:
     try:
@@ -506,6 +524,7 @@ def log_event(
         )
     except Exception:
         pass
+
 
 # ---------------------------
 # IP tag (privacy-preserving)
@@ -881,6 +900,7 @@ class SubmitPowOut(BaseModel):
 
 # Transfer models
 
+
 class TransferIn(BaseModel):
     to_address: str
     amount: int
@@ -903,10 +923,16 @@ class AccountInfoOut(BaseModel):
     server_time: int
 
 
+class AccountPublicOut(BaseModel):
+    account_id: str
+    credits: int
+    locked_credits: int
+    server_time: int
+
+
 class RedeemRequestIn(BaseModel):
     tip_address: str
     currency: TypingOptional[str] = None  # e.g. "BCH", "LTC" – purely informational for now
-
 
 
 class RedeemRequestOut(BaseModel):
@@ -940,6 +966,7 @@ class EventOut(BaseModel):
     amount: TypingOptional[int] = None
     other: TypingOptional[str] = None
     meta: TypingOptional[Dict[str, Any]] = None
+
 
 # Config model for public API
 class ConfigOut(BaseModel):
@@ -1289,6 +1316,35 @@ def get_config():
     )
 
 
+@app.get("/account", response_model=AccountPublicOut)
+def get_account_public(account_id: str = ""):
+    """Public read-only account balance lookup.
+
+    Used by the community explorer to display the current HCC balance for a given address.
+    """
+    acc = (account_id or "").strip()
+    if not _is_hex_40(acc):
+        raise HTTPException(status_code=400, detail="invalid account_id")
+
+    con = db()
+    try:
+        row = con.execute(
+            "SELECT account_id, credits, locked_credits FROM accounts WHERE account_id=?",
+            (acc,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="unknown account")
+
+        return AccountPublicOut(
+            account_id=str(row[0]),
+            credits=int(row[1] or 0),
+            locked_credits=int(row[2] or 0),
+            server_time=now_unix(),
+        )
+    finally:
+        con.close()
+
+
 # ---------------------------
 # /me endpoint: Account info
 # ---------------------------
@@ -1469,7 +1525,6 @@ def _lock_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int) 
         raise ValueError("insufficient credits or unknown account")
 
 
-
 def _unlock_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int) -> None:
     """Move locked_credits -> credits atomically. Raises ValueError on failure."""
     if amount <= 0:
@@ -1551,6 +1606,7 @@ def _transfer_locked_credits_atomic(
     )
     if cur.rowcount != 1:
         raise ValueError("recipient account not found")
+
 
 # ---------------------------
 # Micro-DEX: mount router
