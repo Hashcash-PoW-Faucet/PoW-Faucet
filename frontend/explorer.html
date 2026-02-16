@@ -42,14 +42,8 @@
     <h1>HashCash Explorer</h1>
 
     <div class="controls">
-      <label class="pill">API
-        <select id="apiSel" title="API base">
-          <option value="">(same origin)</option>
-          <option value="https://hashcash-pow-faucet.dynv6.net/api">hashcash-pow-faucet.dynv6.net/api</option>
-        </select>
-      </label>
 
-      <input id="accountId" class="mono" placeholder="account_id (optional) e.g. 40-hex address" />
+      <input id="accountId" class="mono" placeholder="Your HCC address / account id (optional)" />
       <label class="pill">Limit
         <select id="limit">
           <option>25</option>
@@ -104,16 +98,13 @@
   </table>
 </main>
 
-<div class="footer wrap">
-  Data source: <span class="mono">GET /events</span>. This is a lightweight “community explorer” (not a blockchain).
-</div>
 
 <script>
   // -------- Config --------
   // Default API base: same origin (""), or choose from dropdown.
   // If your frontend is served elsewhere (nginx), set a full URL here:
   // const DEFAULT_API_BASE = "https://hashcash-pow-faucet.dynv6.net/api";
-  const DEFAULT_API_BASE = "";
+  const DEFAULT_API_BASE = "https://hashcash-pow-faucet.dynv6.net/api";
 
   // -------- Helpers --------
   const $ = (id) => document.getElementById(id);
@@ -145,7 +136,7 @@
   }
 
   function buildUrl() {
-    const apiBase = ($("apiSel").value || DEFAULT_API_BASE).replace(/\/+$/, "");
+    const apiBase = (DEFAULT_API_BASE || "").replace(/\/+$/, "");
     const limit = $("limit").value;
     const acc = $("accountId").value.trim();
 
@@ -170,7 +161,9 @@
     const tbody = $("rows");
     tbody.innerHTML = "";
 
-    for (const e of events) {
+    // Show newest first
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
       const tr = document.createElement("tr");
 
       const tdTime = document.createElement("td");
@@ -200,15 +193,42 @@
 
       const tdMeta = document.createElement("td");
       tdMeta.className = "meta mono";
-      tdMeta.textContent = toPrettyMeta(e.meta);
-      tr.appendChild(tdMeta);
 
+      const metaStr = toPrettyMeta(e.meta);
+      if (!metaStr) {
+        tdMeta.textContent = "";
+      } else {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Show";
+        btn.style.padding = "6px 10px";
+        btn.style.borderRadius = "999px";
+        btn.style.fontSize = "12px";
+        btn.style.marginRight = "8px";
+
+        const pre = document.createElement("pre");
+        pre.className = "meta mono";
+        pre.style.margin = "8px 0 0";
+        pre.style.display = "none";
+        pre.textContent = metaStr;
+
+        btn.addEventListener("click", () => {
+          const open = pre.style.display !== "none";
+          pre.style.display = open ? "none" : "block";
+          btn.textContent = open ? "Show" : "Hide";
+        });
+
+        tdMeta.appendChild(btn);
+        tdMeta.appendChild(pre);
+      }
+
+      tr.appendChild(tdMeta);
       tbody.appendChild(tr);
     }
 
     $("countPill").textContent = `${events.length} events`;
-    const last = events.length ? fmtTime(events[events.length - 1].ts) : "—";
-    $("lastPill").textContent = `last: ${last}`;
+    const newest = events.length ? fmtTime(events[events.length - 1].ts) : "—";
+    $("lastPill").textContent = `last: ${newest}`;
   }
 
   async function fetchEvents() {
@@ -233,12 +253,11 @@
     const qs = new URLSearchParams(window.location.search);
     const acc = (qs.get("account_id") || "").trim();
     const limit = qs.get("limit");
-    const api = (qs.get("api") || "").trim();
+    // const api = (qs.get("api") || "").trim();
 
     if (acc) $("accountId").value = acc;
     if (limit) $("limit").value = limit;
-    if (api) $("apiSel").value = api;
-    else $("apiSel").value = DEFAULT_API_BASE;
+    // No apiSel logic
   }
 
   function updateUrlBar() {
@@ -246,8 +265,7 @@
     const acc = $("accountId").value.trim();
     if (acc) qs.set("account_id", acc);
     qs.set("limit", $("limit").value);
-    const api = $("apiSel").value;
-    if (api) qs.set("api", api);
+    // No api param
     const newUrl = `${window.location.pathname}?${qs.toString()}`;
     history.replaceState({}, "", newUrl);
   }
@@ -278,7 +296,6 @@
 
   $("accountId").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
   $("limit").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
-  $("apiSel").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
 
   $("shareBtn").addEventListener("click", async () => {
     updateUrlBar();
