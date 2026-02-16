@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HashCash Explorer</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif; }
+    body { margin: 0; background: #0b0f17; color: #e6edf3; }
+    header { position: sticky; top: 0; z-index: 10; background: #0b0f17; border-bottom: 1px solid #1f2a44; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 14px 16px; }
+    h1 { font-size: 18px; margin: 0 0 10px; font-weight: 700; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    input, select, button {
+      background: #0f172a; color: #e6edf3; border: 1px solid #263455; border-radius: 10px;
+      padding: 10px 12px; font-size: 14px;
+    }
+    input { min-width: 280px; }
+    button { cursor: pointer; }
+    button:hover { border-color: #3b82f6; }
+    .pill { font-size: 12px; padding: 6px 10px; border-radius: 999px; border: 1px solid #263455; background: #0f172a; }
+    .status { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .err { color: #ff9a9a; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #1f2a44; vertical-align: top; }
+    th { text-align: left; font-size: 12px; letter-spacing: .03em; color: #a8b3cf; text-transform: uppercase; }
+    td { font-size: 13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .muted { color: #9aa4bd; }
+    .type { font-weight: 700; }
+    .amount-pos { color: #7ee787; }
+    .amount-neg { color: #ff7b72; }
+    .meta { white-space: pre-wrap; word-break: break-word; }
+    .footer { padding: 18px 16px; color: #9aa4bd; font-size: 12px; }
+    a { color: #7aa2ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>HashCash Explorer</h1>
+
+    <div class="controls">
+      <label class="pill">API
+        <select id="apiSel" title="API base">
+          <option value="">(same origin)</option>
+          <option value="https://hashcash-pow-faucet.dynv6.net/api">hashcash-pow-faucet.dynv6.net/api</option>
+        </select>
+      </label>
+
+      <input id="accountId" class="mono" placeholder="account_id (optional) e.g. 40-hex address" />
+      <label class="pill">Limit
+        <select id="limit">
+          <option>25</option>
+          <option selected>50</option>
+          <option>100</option>
+          <option>200</option>
+        </select>
+      </label>
+
+      <button id="refreshBtn">Refresh</button>
+
+      <label class="pill">
+        <input id="auto" type="checkbox" style="vertical-align: middle; margin-right: 8px;" />
+        Auto
+      </label>
+
+      <label class="pill">Every
+        <select id="interval">
+          <option value="5">5s</option>
+          <option value="10" selected>10s</option>
+          <option value="20">20s</option>
+          <option value="60">60s</option>
+        </select>
+      </label>
+
+      <button id="shareBtn" title="Copy link">Copy Link</button>
+      <button id="clearBtn" title="Clear filter">Clear</button>
+    </div>
+
+    <div class="status">
+      <span class="pill" id="countPill">0 events</span>
+      <span class="pill" id="lastPill">last: —</span>
+      <span class="pill muted" id="hintPill">Tip: filter by account_id to see only your history</span>
+      <span class="pill err" id="errPill" style="display:none;"></span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:140px;">Time</th>
+        <th style="width:120px;">Type</th>
+        <th style="width:90px;">Amount</th>
+        <th>Account</th>
+        <th>Other</th>
+        <th style="width:330px;">Meta</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</main>
+
+<div class="footer wrap">
+  Data source: <span class="mono">GET /events</span>. This is a lightweight “community explorer” (not a blockchain).
+</div>
+
+<script>
+  // -------- Config --------
+  // Default API base: same origin (""), or choose from dropdown.
+  // If your frontend is served elsewhere (nginx), set a full URL here:
+  // const DEFAULT_API_BASE = "https://hashcash-pow-faucet.dynv6.net/api";
+  const DEFAULT_API_BASE = "";
+
+  // -------- Helpers --------
+  const $ = (id) => document.getElementById(id);
+
+  function fmtTime(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts * 1000);
+    return d.toLocaleString();
+  }
+
+  function amountClass(a) {
+    if (a === null || a === undefined) return "";
+    return (a >= 0) ? "amount-pos" : "amount-neg";
+  }
+
+  function safeString(x) {
+    if (x === null || x === undefined) return "";
+    if (typeof x === "string") return x;
+    try { return JSON.stringify(x); } catch { return String(x); }
+  }
+
+  function toPrettyMeta(meta) {
+    if (!meta) return "";
+    try {
+      return JSON.stringify(meta, null, 2);
+    } catch {
+      return safeString(meta);
+    }
+  }
+
+  function buildUrl() {
+    const apiBase = ($("apiSel").value || DEFAULT_API_BASE).replace(/\/+$/, "");
+    const limit = $("limit").value;
+    const acc = $("accountId").value.trim();
+
+    const u = new URL((apiBase || "") + "/events", window.location.origin);
+    u.searchParams.set("limit", String(limit));
+    if (acc) u.searchParams.set("account_id", acc);
+    return u.toString();
+  }
+
+  function setErr(msg) {
+    const el = $("errPill");
+    if (!msg) {
+      el.style.display = "none";
+      el.textContent = "";
+      return;
+    }
+    el.style.display = "inline-flex";
+    el.textContent = msg;
+  }
+
+  function render(events) {
+    const tbody = $("rows");
+    tbody.innerHTML = "";
+
+    for (const e of events) {
+      const tr = document.createElement("tr");
+
+      const tdTime = document.createElement("td");
+      tdTime.textContent = fmtTime(e.ts);
+      tdTime.className = "muted";
+      tr.appendChild(tdTime);
+
+      const tdType = document.createElement("td");
+      tdType.textContent = e.type || "";
+      tdType.className = "type";
+      tr.appendChild(tdType);
+
+      const tdAmt = document.createElement("td");
+      tdAmt.textContent = (e.amount === null || e.amount === undefined) ? "" : String(e.amount);
+      tdAmt.className = amountClass(e.amount);
+      tr.appendChild(tdAmt);
+
+      const tdAcc = document.createElement("td");
+      tdAcc.className = "mono";
+      tdAcc.textContent = e.account_id || "";
+      tr.appendChild(tdAcc);
+
+      const tdOther = document.createElement("td");
+      tdOther.className = "mono";
+      tdOther.textContent = e.other || "";
+      tr.appendChild(tdOther);
+
+      const tdMeta = document.createElement("td");
+      tdMeta.className = "meta mono";
+      tdMeta.textContent = toPrettyMeta(e.meta);
+      tr.appendChild(tdMeta);
+
+      tbody.appendChild(tr);
+    }
+
+    $("countPill").textContent = `${events.length} events`;
+    const last = events.length ? fmtTime(events[events.length - 1].ts) : "—";
+    $("lastPill").textContent = `last: ${last}`;
+  }
+
+  async function fetchEvents() {
+    setErr("");
+    const url = buildUrl();
+    try {
+      const r = await fetch(url, { headers: { "accept": "application/json" }});
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error(`HTTP ${r.status}: ${t || r.statusText}`);
+      }
+      const data = await r.json();
+      if (!Array.isArray(data)) throw new Error("Bad response: expected JSON array");
+      render(data);
+    } catch (e) {
+      setErr(e.message || String(e));
+      render([]);
+    }
+  }
+
+  function applyQueryParams() {
+    const qs = new URLSearchParams(window.location.search);
+    const acc = (qs.get("account_id") || "").trim();
+    const limit = qs.get("limit");
+    const api = (qs.get("api") || "").trim();
+
+    if (acc) $("accountId").value = acc;
+    if (limit) $("limit").value = limit;
+    if (api) $("apiSel").value = api;
+    else $("apiSel").value = DEFAULT_API_BASE;
+  }
+
+  function updateUrlBar() {
+    const qs = new URLSearchParams();
+    const acc = $("accountId").value.trim();
+    if (acc) qs.set("account_id", acc);
+    qs.set("limit", $("limit").value);
+    const api = $("apiSel").value;
+    if (api) qs.set("api", api);
+    const newUrl = `${window.location.pathname}?${qs.toString()}`;
+    history.replaceState({}, "", newUrl);
+  }
+
+  let timer = null;
+  function updateAuto() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if ($("auto").checked) {
+      const sec = parseInt($("interval").value, 10) || 10;
+      timer = setInterval(fetchEvents, sec * 1000);
+    }
+  }
+
+  // -------- Wire UI --------
+  $("refreshBtn").addEventListener("click", async () => {
+    updateUrlBar();
+    await fetchEvents();
+  });
+
+  $("clearBtn").addEventListener("click", async () => {
+    $("accountId").value = "";
+    updateUrlBar();
+    await fetchEvents();
+  });
+
+  $("auto").addEventListener("change", () => { updateAuto(); });
+  $("interval").addEventListener("change", () => { updateAuto(); });
+
+  $("accountId").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
+  $("limit").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
+  $("apiSel").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
+
+  $("shareBtn").addEventListener("click", async () => {
+    updateUrlBar();
+    const link = window.location.href;
+    try {
+      await navigator.clipboard.writeText(link);
+      $("hintPill").textContent = "Link copied ✅";
+      setTimeout(() => $("hintPill").textContent = "Tip: filter by account_id to see only your history", 1200);
+    } catch {
+      // fallback
+      prompt("Copy this link:", link);
+    }
+  });
+
+  // Init
+  applyQueryParams();
+  updateUrlBar();
+  fetchEvents();
+  updateAuto();
+</script>
+</body>
+</html>

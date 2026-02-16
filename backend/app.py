@@ -474,6 +474,38 @@ def day_key(ts: Optional[int] = None) -> str:
     ts = ts or now_unix()
     return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
+def _safe_json(obj: Any) -> str:
+    try:
+        return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+
+def log_event(
+    con: sqlite3.Connection,
+    *,
+    ts: int,
+    type: str,
+    account_id: Optional[str] = None,
+    amount: Optional[int] = None,
+    other: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append one explorer/audit event. Best-effort; never raises."""
+    try:
+        con.execute(
+            "INSERT INTO events(ts, type, account_id, amount, other, meta) VALUES(?,?,?,?,?,?)",
+            (
+                int(ts),
+                str(type),
+                str(account_id) if account_id else None,
+                int(amount) if amount is not None else None,
+                str(other) if other else None,
+                _safe_json(meta or {}),
+            ),
+        )
+    except Exception:
+        pass
 
 # ---------------------------
 # IP tag (privacy-preserving)
@@ -627,6 +659,21 @@ def init_db():
       note TEXT
     );
     """)
+
+    con.execute("""
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      account_id TEXT,
+      amount INTEGER,
+      other TEXT,
+      meta TEXT
+    );
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_events_account_ts ON events(account_id, ts);")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts);")
 
     con.execute("""
     CREATE TABLE IF NOT EXISTS dex_orders (
@@ -885,6 +932,15 @@ class RedeemLogEntryOut(BaseModel):
     note: TypingOptional[str] = None
 
 
+class EventOut(BaseModel):
+    id: int
+    ts: int
+    type: str
+    account_id: TypingOptional[str] = None
+    amount: TypingOptional[int] = None
+    other: TypingOptional[str] = None
+    meta: TypingOptional[Dict[str, Any]] = None
+
 # Config model for public API
 class ConfigOut(BaseModel):
     claim_bits: int
@@ -1093,6 +1149,7 @@ def challenge_extreme(req: Request):
     finally:
         con.close()
 
+
 @app.post("/submit_pow", response_model=SubmitPowOut)
 def submit_pow(data: SubmitPowIn, req: Request):
     account_id = auth_account(req)
@@ -1146,6 +1203,23 @@ def submit_pow(data: SubmitPowIn, req: Request):
 
         row = get_account(con, account_id)
         _, _, next_seq, credits, cooldown_until, _, _ = row
+        # Explorer: record mining event (best-effort)
+        try:
+            evt_type = "mine_extreme" if mode == "extreme" else "mine"
+            log_event(
+                con,
+                ts=now_unix(),
+                type=evt_type,
+                account_id=account_id,
+                amount=1,
+                other=None,
+                meta={
+                    "seq": int(kv["seq"]),
+                    "bits": int(kv["bits"]),
+                },
+            )
+        except Exception:
+            pass
         return SubmitPowOut(
             ok=True,
             credits=credits,
@@ -1242,6 +1316,58 @@ def get_me(req: Request):
         con.close()
 
 
+@app.get("/events", response_model=List[EventOut])
+def events(req: Request, limit: int = 50, account_id: str = ""):
+    limit = int(limit) if isinstance(limit, int) else 50
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+
+    acc = (account_id or "").strip()
+
+    con = db()
+    try:
+        if acc:
+            rows = con.execute(
+                "SELECT id, ts, type, account_id, amount, other, meta "
+                "FROM events WHERE account_id=? ORDER BY id DESC LIMIT ?",
+                (acc, limit),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT id, ts, type, account_id, amount, other, meta "
+                "FROM events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+        out: List[EventOut] = []
+        for r in rows:
+            meta_obj: Dict[str, Any] = {}
+            mid = r[6]
+            if isinstance(mid, str) and mid:
+                try:
+                    meta_obj = json.loads(mid)
+                    if not isinstance(meta_obj, dict):
+                        meta_obj = {}
+                except Exception:
+                    meta_obj = {}
+            out.append(EventOut(
+                id=int(r[0]),
+                ts=int(r[1] or 0),
+                type=str(r[2] or ""),
+                account_id=str(r[3]) if r[3] is not None else None,
+                amount=int(r[4]) if r[4] is not None else None,
+                other=str(r[5]) if r[5] is not None else None,
+                meta=meta_obj,
+            ))
+
+        out.reverse()  # ascending
+        return out
+    finally:
+        con.close()
+
+
 # ---------------------------
 # /transfer endpoint: Move credits to another address
 # ---------------------------
@@ -1291,6 +1417,10 @@ def transfer(data: TransferIn, req: Request):
             "UPDATE accounts SET credits = credits + ? WHERE account_id=?",
             (amount, to_addr),
         )
+
+        ts = now_unix()
+        log_event(con, ts=ts, type="transfer_out", account_id=from_addr, amount=-amount, other=to_addr, meta={})
+        log_event(con, ts=ts, type="transfer_in", account_id=to_addr, amount=amount, other=from_addr, meta={})
 
         con.execute("COMMIT;")
 
@@ -1645,6 +1775,7 @@ def redeem_log(req: Request, limit: int = 10, all: bool = False):
 # /redeem_request endpoint: Ask for an external crypto tip
 # ---------------------------
 
+
 # New redeem_request implementation: lock credits, burn on tip, unlock if no payout
 @app.post("/redeem_request", response_model=RedeemRequestOut)
 def redeem_request(data: RedeemRequestIn, req: Request):
@@ -1727,6 +1858,16 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         )
         request_id = int(cur.lastrowid)
 
+        log_event(
+            con,
+            ts=now_unix(),
+            type="redeem_lock",
+            account_id=account_id,
+            amount=-cost,
+            other=currency,
+            meta={"request_id": int(request_id), "tip_address": tip_address},
+        )
+
         # Commit Phase 1: credits are now locked and the request is recorded.
         con.execute("COMMIT;")
 
@@ -1744,6 +1885,20 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                 con.execute(
                     "UPDATE redeem_requests SET state=?, note=? WHERE id=?",
                     (final_state, note, request_id),
+                )
+                # Explorer: record redeem sent (best-effort)
+                log_event(
+                    con,
+                    ts=now_unix(),
+                    type="redeem_sent",
+                    account_id=account_id,
+                    amount=0,
+                    other=currency,
+                    meta={
+                        "request_id": int(request_id),
+                        "tip_amount": float(tip_amount),
+                        "txid": str(txid),
+                    },
                 )
                 con.execute("COMMIT;")
             except Exception:
@@ -1777,6 +1932,15 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                 con.execute(
                     "UPDATE redeem_requests SET state=?, note=? WHERE id=?",
                     (final_state, note, request_id),
+                )
+                log_event(
+                    con,
+                    ts=now_unix(),
+                    type="redeem_no_payout",
+                    account_id=account_id,
+                    amount=0,
+                    other=currency,
+                    meta={"request_id": int(request_id), "safe_to_unlock": bool(safe_to_unlock), "rpc_error": (rpc_error or "")},
                 )
                 con.execute("COMMIT;")
             except Exception:
