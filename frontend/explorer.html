@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>HashCash Explorer</title>
+  <title>Hashcash Explorer</title>
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif; }
     body { margin: 0; background: #0b0f17; color: #e6edf3; }
@@ -31,9 +31,6 @@
     .amount-pos { color: #7ee787; }
     .amount-neg { color: #ff7b72; }
     .meta { white-space: pre-wrap; word-break: break-word; }
-    .footer { padding: 18px 16px; color: #9aa4bd; font-size: 12px; }
-    a { color: #7aa2ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -42,32 +39,20 @@
     <h1>HashCash Explorer</h1>
 
     <div class="controls">
+      <input id="accountId" class="mono" placeholder="HCC address or txid" />
 
-      <input id="accountId" class="mono" placeholder="Your HCC address / account id (optional)" />
-      <label class="pill">Limit
+      <label class="pill">Page size
         <select id="limit">
-          <option>25</option>
-          <option selected>50</option>
-          <option>100</option>
+          <option>50</option>
+          <option selected>100</option>
           <option>200</option>
         </select>
       </label>
 
-      <button id="refreshBtn">Refresh</button>
-
-      <label class="pill">
-        <input id="auto" type="checkbox" style="vertical-align: middle; margin-right: 8px;" />
-        Auto
-      </label>
-
-      <label class="pill">Every
-        <select id="interval">
-          <option value="5">5s</option>
-          <option value="10" selected>10s</option>
-          <option value="20">20s</option>
-          <option value="60">60s</option>
-        </select>
-      </label>
+      <button id="refreshBtn">Search</button>
+      <button id="prevBtn" title="Previous page">◀ Prev</button>
+      <button id="nextBtn" title="Next page">Next ▶</button>
+      <!-- Auto/interval controls removed -->
 
       <button id="shareBtn" title="Copy link">Copy Link</button>
       <button id="clearBtn" title="Clear filter">Clear</button>
@@ -76,7 +61,10 @@
     <div class="status">
       <span class="pill" id="countPill">0 events</span>
       <span class="pill" id="lastPill">last: —</span>
-      <span class="pill muted" id="hintPill">Tip: filter by account_id to see only your history</span>
+      <span class="pill" id="pagePill">page 1/1</span>
+      <span class="pill" id="balPill" style="display:none;">Balance: — HCC</span>
+      <span class="pill" id="lockPill" style="display:none;">Locked: — HCC</span>
+      <span class="pill muted" id="hintPill">Tip: enter an HCC address or a txid and click Search. Auto refreshes every 30s.</span>
       <span class="pill err" id="errPill" style="display:none;"></span>
     </div>
   </div>
@@ -87,10 +75,11 @@
     <thead>
       <tr>
         <th style="width:140px;">Time</th>
+        <th style="width:140px;">Tx</th>
         <th style="width:120px;">Type</th>
         <th style="width:90px;">Amount</th>
         <th>Account</th>
-        <th>Other</th>
+        <th style="width:80px;">Other</th>
         <th style="width:330px;">Meta</th>
       </tr>
     </thead>
@@ -98,16 +87,22 @@
   </table>
 </main>
 
-
 <script>
-  // -------- Config --------
-  // Default API base: same origin (""), or choose from dropdown.
-  // If your frontend is served elsewhere (nginx), set a full URL here:
-  // const DEFAULT_API_BASE = "https://hashcash-pow-faucet.dynv6.net/api";
   const DEFAULT_API_BASE = "https://hashcash-pow-faucet.dynv6.net/api";
-
-  // -------- Helpers --------
   const $ = (id) => document.getElementById(id);
+
+  const FETCH_LIMIT = 5000;   // always pull this many from backend
+  let currentPage = 0;        // 0-based
+
+  function normalizeTxInput(s) {
+    return (s || "").trim();
+  }
+
+  function looksLikeTxid(s) {
+    const t = normalizeTxInput(s);
+    // our computed txid is 16 hex chars (fnv1a64)
+    return /^[0-9a-fA-F]{16}$/.test(t);
+  }
 
   function fmtTime(ts) {
     if (!ts) return "—";
@@ -117,7 +112,7 @@
 
   function amountClass(a) {
     if (a === null || a === undefined) return "";
-    return (a >= 0) ? "amount-pos" : "amount-neg";
+    return (Number(a) >= 0) ? "amount-pos" : "amount-neg";
   }
 
   function safeString(x) {
@@ -128,48 +123,259 @@
 
   function toPrettyMeta(meta) {
     if (!meta) return "";
-    try {
-      return JSON.stringify(meta, null, 2);
-    } catch {
-      return safeString(meta);
+    try { return JSON.stringify(meta, null, 2); } catch { return safeString(meta); }
+  }
+
+  function stableEventKey(obj) {
+    const keys = Object.keys(obj).sort();
+    const parts = [];
+    for (const k of keys) {
+      let v = obj[k];
+      if (v && typeof v === "object") {
+        try {
+          const mk = Object.keys(v).sort();
+          const mv = {};
+          for (const kk of mk) mv[kk] = v[kk];
+          v = mv;
+        } catch {}
+      }
+      parts.push(`${k}=${safeString(v)}`);
     }
+    return parts.join("|");
+  }
+
+  function fnv1a64Hex(str) {
+    let hash = 0xcbf29ce484222325n;
+    const prime = 0x100000001b3n;
+    for (let i = 0; i < str.length; i++) {
+      hash ^= BigInt(str.charCodeAt(i));
+      hash = (hash * prime) & 0xffffffffffffffffn;
+    }
+    return hash.toString(16).padStart(16, "0");
+  }
+
+  // TxID logic:
+  // - Transfers are grouped by {ts, from, to, abs(amount)}.
+  // - Redeem/burn-like events are grouped by meta.request_id if present.
+  function computeTxId(e) {
+    const type = e.type || "";
+    const meta = (e.meta && typeof e.meta === "object") ? e.meta : {};
+    const requestId = (meta.request_id ?? "").toString();
+    if (requestId) {
+      return fnv1a64Hex(stableEventKey({ kind: "redeem", request_id: requestId }));
+    }
+
+    // Group redeem-ish events by request_id if available
+    if (requestId && (
+        type.startsWith("redeem") ||
+        type === "burn" ||
+        type === "redeem_burn" ||
+        type === "redeem_complete" ||
+        type === "redeem_done"
+    )) {
+      return fnv1a64Hex(stableEventKey({ kind: "redeem", request_id: requestId }));
+    }
+
+    // Transfer grouping
+    if (type === "transfer_out" || type === "transfer_in" || type === "transfer") {
+      const amt = (e.amount === null || e.amount === undefined) ? 0 : Math.abs(Number(e.amount));
+      const from = (type === "transfer_out" || type === "transfer") ? (e.account_id || "") : (e.other || "");
+      const to = (type === "transfer_out" || type === "transfer") ? (e.other || "") : (e.account_id || "");
+      const key = stableEventKey({ kind: "transfer", ts: e.ts || 0, from, to, amount: amt });
+      return fnv1a64Hex(key);
+    }
+
+    // Default grouping: stable hash of key fields (+ request_id if present)
+    const key = stableEventKey({
+      kind: type,
+      ts: e.ts || 0,
+      account_id: e.account_id || "",
+      other: e.other || "",
+      amount: (e.amount === null || e.amount === undefined) ? "" : Number(e.amount),
+      request_id: requestId,
+      seq: meta.seq ?? "",
+      bits: meta.bits ?? "",
+      txid: meta.txid ?? "",
+    });
+    return fnv1a64Hex(key);
+  }
+
+  // Global view: merge transfer_in/out into TWO rows:
+  //  - Sender row: amount negative, Other="sender"
+  //  - Recipient row: amount positive, Other="recipient"
+  // Account-filter view: keep raw events (so user sees exact in/out).
+  function prepareDisplayEvents(events, hasAccountFilter) {
+    const out = [];
+
+    if (hasAccountFilter) {
+      for (const e of events) out.push(Object.assign({}, e, { txid: computeTxId(e) }));
+      return out;
+    }
+
+    const seenTransferTx = new Set();
+    for (const e of events) {
+      const type = e.type || "";
+      const tx = computeTxId(e);
+
+      if (type === "transfer_out" || type === "transfer_in") {
+        if (seenTransferTx.has(tx)) continue;
+
+        const amt = (e.amount === null || e.amount === undefined) ? 0 : Math.abs(Number(e.amount));
+        const from = (type === "transfer_out") ? (e.account_id || "") : (e.other || "");
+        const to = (type === "transfer_out") ? (e.other || "") : (e.account_id || "");
+
+        // Row 1: sender
+        out.push({
+          id: e.id ?? null,
+          ts: e.ts,
+          type: "transfer",
+          account_id: from,
+          other: "sender",
+          amount: -amt,
+          meta: Object.assign({}, (e.meta || {}), { merged: true }),
+          txid: tx,
+        });
+
+        // Row 2: recipient
+        out.push({
+          id: e.id ?? null,
+          ts: e.ts,
+          type: "transfer",
+          account_id: to,
+          other: "recipient",
+          amount: amt,
+          meta: null,
+          txid: tx,
+        });
+
+        seenTransferTx.add(tx);
+        continue;
+      }
+
+      out.push(Object.assign({}, e, { txid: tx }));
+    }
+
+    return out;
   }
 
   function buildUrl() {
     const apiBase = (DEFAULT_API_BASE || "").replace(/\/+$/, "");
-    const limit = $("limit").value;
-    const acc = $("accountId").value.trim();
-
+    const limit = FETCH_LIMIT;
+    const raw = $("accountId").value.trim();
+    const isTx = looksLikeTxid(raw);
+    const acc = isTx ? "" : raw;
     const u = new URL((apiBase || "") + "/events", window.location.origin);
     u.searchParams.set("limit", String(limit));
     if (acc) u.searchParams.set("account_id", acc);
     return u.toString();
   }
 
+  function buildAccountUrl() {
+    const apiBase = (DEFAULT_API_BASE || "").replace(/\/+$/, "");
+    const raw = $("accountId").value.trim();
+    const isTx = looksLikeTxid(raw);
+    const acc = isTx ? "" : raw;
+    const u = new URL((apiBase || "") + "/account", window.location.origin);
+    if (acc) u.searchParams.set("account_id", acc);
+    return u.toString();
+  }
+
   function setErr(msg) {
     const el = $("errPill");
-    if (!msg) {
-      el.style.display = "none";
-      el.textContent = "";
-      return;
-    }
+    if (!msg) { el.style.display = "none"; el.textContent = ""; return; }
     el.style.display = "inline-flex";
     el.textContent = msg;
+  }
+
+  function setBalancePills(credits, locked) {
+    const bal = $("balPill");
+    const lock = $("lockPill");
+    if (credits === null || credits === undefined) {
+      bal.style.display = "none";
+      lock.style.display = "none";
+      bal.textContent = "Balance: — HCC";
+      lock.textContent = "Locked: — HCC";
+      return;
+    }
+    bal.style.display = "inline-flex";
+    lock.style.display = "inline-flex";
+    bal.textContent = `Balance: ${credits} HCC`;
+    lock.textContent = `Locked: ${locked ?? 0} HCC`;
+  }
+
+  async function fetchBalance() {
+    const raw = $("accountId").value.trim();
+    const isTx = looksLikeTxid(raw);
+    const acc = isTx ? "" : raw;
+    if (!acc) { setBalancePills(null, null); return; }
+    try {
+      const url = buildAccountUrl();
+      const r = await fetch(url, { headers: { "accept": "application/json" }});
+      if (!r.ok) { setBalancePills(null, null); return; }
+      const data = await r.json();
+      setBalancePills(data.credits ?? 0, data.locked_credits ?? 0);
+    } catch { setBalancePills(null, null); }
   }
 
   function render(events) {
     const tbody = $("rows");
     tbody.innerHTML = "";
 
-    // Show newest first
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
+    const raw = $("accountId").value.trim();
+    const isTx = looksLikeTxid(raw);
+    const hasAccountFilter = (!isTx) && raw.length > 0;
+    const txFilter = isTx ? normalizeTxInput(raw) : "";
+
+    let baseEvents = events;
+    if (txFilter) {
+      const needle = txFilter.toLowerCase();
+      baseEvents = events.filter(ev => {
+        try {
+          const tid = (computeTxId(ev) || "").toLowerCase();
+          return tid === needle;
+        } catch { return false; }
+      });
+    }
+
+    const displayEvents = prepareDisplayEvents(baseEvents, hasAccountFilter);
+
+    const pageSize = Math.max(1, parseInt($("limit").value, 10) || 200);
+    const totalPages = Math.max(1, Math.ceil(displayEvents.length / pageSize));
+    if (currentPage >= totalPages) currentPage = totalPages - 1;
+    if (currentPage < 0) currentPage = 0;
+
+    // Newest-first paging.
+    // displayEvents is chronological (oldest -> newest). We page from the end.
+    const total = displayEvents.length;
+    const startIdx = total - 1 - (currentPage * pageSize); // index of newest item on this page
+    const endExclusive = Math.max(-1, startIdx - pageSize); // stop when i == endExclusive
+
+    $("pagePill").textContent = `page ${currentPage + 1}/${totalPages}`;
+
+    let lastTxRendered = "";
+
+    for (let i = startIdx; i > endExclusive; i--) {
+      if (i < 0 || i >= total) continue;
+      const e = displayEvents[i];
       const tr = document.createElement("tr");
 
+      // Grouping: if same txid as previous rendered row, blank Time/Tx
+      const curTx = (e.txid || "");
+      const sameTxAsPrev = lastTxRendered && (lastTxRendered === curTx);
+      if (!sameTxAsPrev) lastTxRendered = curTx;
+
       const tdTime = document.createElement("td");
-      tdTime.textContent = fmtTime(e.ts);
+      tdTime.textContent = sameTxAsPrev ? "" : fmtTime(e.ts);
       tdTime.className = "muted";
       tr.appendChild(tdTime);
+
+      const tdTx = document.createElement("td");
+      tdTx.className = "mono";
+      const fullTx = e.txid || "";
+      const shortTx = fullTx ? (fullTx.slice(0, 8) + "…" + fullTx.slice(-4)) : "";
+      tdTx.textContent = sameTxAsPrev ? "" : fullTx;
+      if (fullTx && !sameTxAsPrev) tdTx.title = fullTx;
+      tr.appendChild(tdTx);
 
       const tdType = document.createElement("td");
       tdType.textContent = e.type || "";
@@ -188,13 +394,18 @@
 
       const tdOther = document.createElement("td");
       tdOther.className = "mono";
+      tdOther.style.maxWidth = "80px";
+      tdOther.style.overflow = "hidden";
+      tdOther.style.textOverflow = "ellipsis";
+      tdOther.style.whiteSpace = "nowrap";
       tdOther.textContent = e.other || "";
+      if (e.other) tdOther.title = e.other;
       tr.appendChild(tdOther);
 
       const tdMeta = document.createElement("td");
       tdMeta.className = "meta mono";
-
       const metaStr = toPrettyMeta(e.meta);
+
       if (!metaStr) {
         tdMeta.textContent = "";
       } else {
@@ -226,13 +437,16 @@
       tbody.appendChild(tr);
     }
 
-    $("countPill").textContent = `${events.length} events`;
+    // Update count pill to show both total matched and shown.
+    const shown = Math.min(pageSize, displayEvents.length - currentPage * pageSize);
+    $("countPill").textContent = `${displayEvents.length} matched (showing ${Math.max(0, shown)})`;
     const newest = events.length ? fmtTime(events[events.length - 1].ts) : "—";
     $("lastPill").textContent = `last: ${newest}`;
   }
 
   async function fetchEvents() {
     setErr("");
+    await fetchBalance();
     const url = buildUrl();
     try {
       const r = await fetch(url, { headers: { "accept": "application/json" }});
@@ -252,50 +466,53 @@
   function applyQueryParams() {
     const qs = new URLSearchParams(window.location.search);
     const acc = (qs.get("account_id") || "").trim();
-    const limit = qs.get("limit");
-    // const api = (qs.get("api") || "").trim();
-
+    const page = qs.get("page");
     if (acc) $("accountId").value = acc;
-    if (limit) $("limit").value = limit;
-    // No apiSel logic
+    if (page !== null) {
+      const p = parseInt(page, 10);
+      currentPage = Number.isFinite(p) && p >= 0 ? p : 0;
+    }
+    const ps = qs.get("page_size");
+    if (ps) {
+      const v = String(ps);
+      const opt = Array.from($("limit").options).some(o => o.value === v);
+      if (opt) $("limit").value = v;
+    }
   }
 
   function updateUrlBar() {
     const qs = new URLSearchParams();
     const acc = $("accountId").value.trim();
     if (acc) qs.set("account_id", acc);
-    qs.set("limit", $("limit").value);
-    // No api param
+    qs.set("page", String(currentPage));
+    // keep page size in URL for convenience
+    qs.set("page_size", $("limit").value);
     const newUrl = `${window.location.pathname}?${qs.toString()}`;
     history.replaceState({}, "", newUrl);
   }
 
-  let timer = null;
-  function updateAuto() {
-    if (timer) { clearInterval(timer); timer = null; }
-    if ($("auto").checked) {
-      const sec = parseInt($("interval").value, 10) || 10;
-      timer = setInterval(fetchEvents, sec * 1000);
-    }
-  }
 
-  // -------- Wire UI --------
-  $("refreshBtn").addEventListener("click", async () => {
+  $("refreshBtn").addEventListener("click", async () => { updateUrlBar(); await fetchEvents(); });
+  $("prevBtn").addEventListener("click", async () => {
+    if (currentPage > 0) currentPage -= 1;
     updateUrlBar();
     await fetchEvents();
   });
-
+  $("nextBtn").addEventListener("click", async () => {
+    currentPage += 1;
+    updateUrlBar();
+    await fetchEvents();
+  });
   $("clearBtn").addEventListener("click", async () => {
     $("accountId").value = "";
+    currentPage = 0;
     updateUrlBar();
+    setBalancePills(null, null);
     await fetchEvents();
   });
-
-  $("auto").addEventListener("change", () => { updateAuto(); });
-  $("interval").addEventListener("change", () => { updateAuto(); });
-
-  $("accountId").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
-  $("limit").addEventListener("change", () => { updateUrlBar(); fetchEvents(); });
+  // Auto/interval event listeners removed
+  $("accountId").addEventListener("change", () => { currentPage = 0; updateUrlBar(); fetchEvents(); });
+  $("limit").addEventListener("change", () => { currentPage = 0; updateUrlBar(); fetchEvents(); });
 
   $("shareBtn").addEventListener("click", async () => {
     updateUrlBar();
@@ -303,18 +520,18 @@
     try {
       await navigator.clipboard.writeText(link);
       $("hintPill").textContent = "Link copied ✅";
-      setTimeout(() => $("hintPill").textContent = "Tip: filter by account_id to see only your history", 1200);
+      setTimeout(() => $("hintPill").textContent = "Tip: enter an HCC address or a txid)and click Search. Auto refreshes every 30s.", 1200);
     } catch {
-      // fallback
       prompt("Copy this link:", link);
     }
   });
 
-  // Init
   applyQueryParams();
   updateUrlBar();
+  fetchBalance();
   fetchEvents();
-  updateAuto();
+  // Fixed auto refresh every 30 seconds (no UI control)
+  setInterval(fetchEvents, 30 * 1000);
 </script>
 </body>
 </html>

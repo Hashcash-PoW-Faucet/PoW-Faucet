@@ -693,6 +693,7 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_account_ts ON events(account_id, ts);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts);")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_events_account_id_id ON events(account_id, id);")
 
     con.execute("""
     CREATE TABLE IF NOT EXISTS dex_orders (
@@ -1377,8 +1378,9 @@ def events(req: Request, limit: int = 50, account_id: str = ""):
     limit = int(limit) if isinstance(limit, int) else 50
     if limit < 1:
         limit = 1
-    if limit > 200:
-        limit = 200
+    MAX_EVENTS = 5000
+    if limit > MAX_EVENTS:
+        limit = MAX_EVENTS
 
     acc = (account_id or "").strip()
 
@@ -1919,9 +1921,9 @@ def redeem_request(data: RedeemRequestIn, req: Request):
             ts=now_unix(),
             type="redeem_lock",
             account_id=account_id,
-            amount=-cost,
-            other=currency,
-            meta={"request_id": int(request_id), "tip_address": tip_address},
+            amount=0,
+            other=currency,  # oder "lock"
+            meta={"request_id": int(request_id), "tip_address": tip_address, "locked": int(cost)},
         )
 
         # Commit Phase 1: credits are now locked and the request is recorded.
@@ -1938,6 +1940,15 @@ def redeem_request(data: RedeemRequestIn, req: Request):
             try:
                 con.execute("BEGIN IMMEDIATE;")
                 _burn_locked_credits_atomic(con, account_id, cost)
+                log_event(
+                    con,
+                    ts=now_unix(),
+                    type="redeem_burn",
+                    account_id=account_id,
+                    amount=-cost,
+                    other="burn",
+                    meta={"request_id": int(request_id)},
+                )
                 con.execute(
                     "UPDATE redeem_requests SET state=?, note=? WHERE id=?",
                     (final_state, note, request_id),
@@ -1979,6 +1990,15 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                 if safe_to_unlock:
                     try:
                         _unlock_credits_atomic(con, account_id, cost)
+                        log_event(
+                            con,
+                            ts=now_unix(),
+                            type="redeem_unlock",
+                            account_id=account_id,
+                            amount=0,
+                            other="unlock",
+                            meta={"request_id": int(request_id), "unlocked": int(cost)},
+                        )
                     except ValueError as e:
                         # If unlocking fails, keep them locked and annotate the note for later manual fix.
                         note = (note or "") + f" [unlock_failed: {e}]"
