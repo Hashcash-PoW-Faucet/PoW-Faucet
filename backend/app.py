@@ -107,10 +107,13 @@ SUBMIT_RL = FixedWindowRateLimiter(SUBMIT_RL_MAX, SUBMIT_RL_WINDOW_SEC)
 
 # PoW parameters
 CLAIM_BITS = int(os.getenv("CLAIM_BITS", "26"))          # normal mining mode
+POTATO_BITS = int(os.getenv("POTATO_BITS", "26"))        # potato mode (low-power)
 EXTREME_BITS = int(os.getenv("EXTREME_BITS", "35"))      # extreme mode
 SIGNUP_BITS = int(os.getenv("SIGNUP_BITS", "28"))
 STAMP_TTL_SEC = int(os.getenv("STAMP_TTL_SEC", "3600"))
 COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))     # cooldown in normal mode
+POTATO_COOLDOWN_SEC = int(os.getenv("POTATO_COOLDOWN_SEC", "300"))  # cooldown in potato mode
+POTATO_DAILY_CAP = int(os.getenv("POTATO_DAILY_CAP", "25"))
 EXTREME_DAILY_CAP = int(os.getenv("EXTREME_DAILY_CAP", "300"))
 DAILY_EARN_CAP = int(os.getenv("DAILY_EARN_CAP", "20"))  # max credits/day
 MAX_SIGNUPS_PER_IP_PER_DAY = int(os.getenv("MAX_SIGNUPS_PER_IP_PER_DAY", "2"))  # max new accounts per IP tag per day
@@ -762,6 +765,18 @@ def accept_pow_and_credit(
                 raise HTTPException(status_code=429, detail="daily cap reached")
             new_cooldown = ts + COOLDOWN_SEC
 
+        elif mode == "potato":
+            # POTATO mode: lower difficulty for low-power devices.
+            # Counts toward the SAME daily cap as normal mode.
+            # Uses a longer cooldown to make it unattractive for high-power rigs.
+            if cooldown_until > ts:
+                con.execute("ROLLBACK;")
+                raise HTTPException(status_code=429, detail="cooldown")
+            if earned_today >= DAILY_EARN_CAP:
+                con.execute("ROLLBACK;")
+                raise HTTPException(status_code=429, detail="daily cap reached")
+            new_cooldown = ts + POTATO_COOLDOWN_SEC
+
         elif mode == "extreme":
             # No cooldown in extreme mode, but global higher daily cap
             if earned_today >= EXTREME_DAILY_CAP:
@@ -1126,6 +1141,58 @@ def challenge_extreme(req: Request):
         con.close()
 
 
+# New endpoint: /challenge_potato
+@app.post("/challenge_potato", response_model=ChallengeOut)
+def challenge_potato(req: Request):
+    """Issue a POTATO-mode PoW challenge.
+
+    Intended for low-power devices (e.g., Raspberry Pis): lower difficulty, but counts toward the same daily cap as normal mode.
+    A longer potato cooldown is applied after successful submits to keep this mode unattractive for high-power rigs.
+    """
+    account_id = auth_account(req)
+    ipt = ip_tag(get_client_ip(req))
+
+    con = db()
+    try:
+        row = get_account(con, account_id)
+        if not row:
+            raise HTTPException(status_code=401, detail="unknown account")
+
+        # daily reset if needed
+        reset_daily_if_needed(con, account_id)
+
+        # read current state
+        _, _, next_seq, credits, cooldown_until, earn_day, earned_today = row
+        ts = now_unix()
+
+        # POTATO mode: lower difficulty for low-power devices.
+        # Counts toward the SAME daily cap as normal mode.
+        # Uses the (shared) cooldown field; the longer potato cooldown is applied on successful submit.
+        if cooldown_until > ts:
+            raise HTTPException(status_code=429, detail="cooldown")
+        if earned_today >= DAILY_EARN_CAP:
+            raise HTTPException(status_code=429, detail="daily cap reached")
+
+        # IP lock: deny parallel mining from same IP tag
+        if not IP_LOCKS.try_acquire(ipt, account_id, STAMP_TTL_SEC):
+            raise HTTPException(status_code=429, detail="ip busy (no parallel mining)")
+
+        exp = ts + STAMP_TTL_SEC
+        bits = POTATO_BITS
+        stamp = make_stamp(
+            action="earn_potato",
+            account_id=account_id,
+            seq=next_seq,
+            bits=bits,
+            exp=exp,
+            ipt=ipt,
+        )
+        sig = hmac_sha256(STAMP_HMAC_KEY, stamp)
+        return ChallengeOut(stamp=stamp, sig=sig, bits=bits, expires_at=exp)
+    finally:
+        con.close()
+
+
 @app.post("/submit_pow", response_model=SubmitPowOut)
 def submit_pow(data: SubmitPowIn, req: Request):
     account_id = auth_account(req)
@@ -1163,6 +1230,8 @@ def submit_pow(data: SubmitPowIn, req: Request):
     act = str(kv.get("act", "earn_credit"))
     if act == "earn_extreme":
         mode = "extreme"
+    elif act == "earn_potato":
+        mode = "potato"
     else:
         mode = "normal"
 
@@ -1181,7 +1250,12 @@ def submit_pow(data: SubmitPowIn, req: Request):
         _, _, next_seq, credits, cooldown_until, _, _ = row
         # Explorer: record mining event (best-effort)
         try:
-            evt_type = "mine_extreme" if mode == "extreme" else "mine"
+            if mode == "extreme":
+                evt_type = "mine_extreme"
+            elif mode == "potato":
+                evt_type = "mine_potato"
+            else:
+                evt_type = "mine"
             log_event(
                 con,
                 ts=now_unix(),
