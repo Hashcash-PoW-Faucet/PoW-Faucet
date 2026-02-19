@@ -6,7 +6,6 @@ backend/faucet_old.db
 backend/faucet.db
 backend/redeem_queue.jsonl
 backend/ops/backup.env
-backend/dex_watcher_state.json
 .idea/
 __pycache__/
 *.py[cod]
