@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any
 # Redeem request models
 from typing import Optional as TypingOptional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -26,10 +26,6 @@ except ImportError:
     from pow_utils import pow_ok  # type: ignore
 
 from pathlib import Path
-try:
-    from .dex import create_dex_router, create_dex_admin_router  # type: ignore
-except ImportError:
-    from dex import create_dex_router, create_dex_admin_router  # type: ignore
 
 # Load environment variables from .env file
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -118,8 +114,7 @@ COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))     # cooldown in normal mod
 EXTREME_DAILY_CAP = int(os.getenv("EXTREME_DAILY_CAP", "300"))
 DAILY_EARN_CAP = int(os.getenv("DAILY_EARN_CAP", "20"))  # max credits/day
 MAX_SIGNUPS_PER_IP_PER_DAY = int(os.getenv("MAX_SIGNUPS_PER_IP_PER_DAY", "2"))  # max new accounts per IP tag per day
-DEX_ADMIN_TOKEN = os.getenv("DEX_ADMIN_TOKEN", "")
-DEX_MIN_CONFS = int(os.getenv("DEX_MIN_CONFS", "6"))
+
 #
 # Redeem / tip parameters
 MIN_REDEEM_CREDITS = int(os.getenv("MIN_REDEEM_CREDITS", "100"))      # minimum credits required to even request a redeem
@@ -131,16 +126,6 @@ REDEEM_QUEUE_FILE = os.getenv("REDEEM_QUEUE_FILE", str(BACKEND_DIR / "redeem_que
 # Whether /redeem_log may return entries for *all* accounts (privacy-sensitive).
 # Default: only return entries for the authenticated account.
 REDEEM_LOG_PUBLIC = os.getenv("REDEEM_LOG_PUBLIC", "0") == "1"
-
-# ---------------------------
-# Micro-DEX parameters
-# ---------------------------
-# TTLs are side-dependent:
-# - SELL_CREDITS: short window for the taker to pay on-chain
-# - BUY_CREDITS:  longer window because the maker might be offline
-DEX_TRADE_TTL_SELL_SEC = int(os.getenv("DEX_TRADE_TTL_SELL_SEC", "1200"))      # 20 min
-DEX_TRADE_TTL_BUY_SEC = int(os.getenv("DEX_TRADE_TTL_BUY_SEC", "172800"))      # 48 h
-DEX_ALLOWED_SIDES = {"SELL_CREDITS", "BUY_CREDITS"}  # BUY_CREDITS: escrow happens on taker side
 
 
 def tail_jsonl_lines(path: str, n: int) -> List[str]:
@@ -694,41 +679,6 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_account_ts ON events(account_id, ts);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_account_id_id ON events(account_id, id);")
-
-    con.execute("""
-    CREATE TABLE IF NOT EXISTS dex_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at INTEGER NOT NULL,
-      maker_account_id TEXT NOT NULL,
-      side TEXT NOT NULL,
-      currency TEXT NOT NULL,
-      credits_amount INTEGER NOT NULL,
-      price_sat_per_credit INTEGER NOT NULL,
-      pay_to_address TEXT NOT NULL,
-      status TEXT NOT NULL
-    );
-    """)
-
-    con.execute("""
-    CREATE TABLE IF NOT EXISTS dex_trades (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at INTEGER NOT NULL,
-      order_id INTEGER NOT NULL,
-      maker_account_id TEXT NOT NULL,
-      taker_account_id TEXT NOT NULL,
-      side TEXT NOT NULL,
-      currency TEXT NOT NULL,
-      credits_amount INTEGER NOT NULL,
-      pay_to_address TEXT NOT NULL,
-      expected_sats INTEGER NOT NULL,
-      txid TEXT,
-      confs INTEGER NOT NULL DEFAULT 0,
-      expires_at INTEGER NOT NULL,
-      state TEXT NOT NULL,
-      settled_at INTEGER
-    );
-    """)
-
     con.execute("CREATE INDEX IF NOT EXISTS idx_dex_orders_open ON dex_orders(status, currency, side, price_sat_per_credit);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dex_trades_state ON dex_trades(state, currency);")
 
@@ -773,14 +723,7 @@ def reset_daily_if_needed(con: sqlite3.Connection, account_id: str):
     """, (dk, account_id, dk))
 
 
-def require_admin(req: Request) -> None:
-    token = (req.headers.get("x-admin-token") or "").strip()
-    if not DEX_ADMIN_TOKEN or token != DEX_ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="admin only")
-
-
 # Atomic accept of seq (prevents replay/races)
-
 def accept_pow_and_credit(
     con: sqlite3.Connection,
     account_id: str,
@@ -968,6 +911,11 @@ class EventOut(BaseModel):
     other: TypingOptional[str] = None
     meta: TypingOptional[Dict[str, Any]] = None
 
+
+class EventsPageOut(BaseModel):
+    newest_id: int
+    next_before_id: TypingOptional[int] = None   # use as before_id for the next (older) page
+    events: List[EventOut]
 
 # Config model for public API
 class ConfigOut(BaseModel):
@@ -1296,8 +1244,6 @@ def get_config():
             "name": cfg.get("name") or sym,
             "short": cfg.get("short") or sym,
             "homepage": cfg.get("homepage") or "",
-            "dex_min_confs": int(cfg.get("dex_min_confs") or cfg.get("min_confs") or DEX_MIN_CONFS),
-            "dex_enabled": bool(cfg.get("dex_enabled") or False),
             # Public redeem/tip range metadata (safe to expose):
             # Keep as strings to avoid float formatting surprises in the UI.
             "min_tip": str(cfg.get("min_tip", "")) if cfg.get("min_tip") is not None else "",
@@ -1427,6 +1373,202 @@ def events(req: Request, limit: int = 50, account_id: str = ""):
 
 
 # ---------------------------
+# Explorer cache (in-memory)
+# ---------------------------
+# Tiny TTL cache to reduce repeated SQLite reads (single-process).
+# Keyed by (account_id, before_id, limit).
+_EVENTS_PAGE_CACHE_TTL_SEC = int(os.getenv("EVENTS_PAGE_CACHE_TTL_SEC", "5"))
+_EVENTS_PAGE_CACHE_MAX_ITEMS = int(os.getenv("EVENTS_PAGE_CACHE_MAX_ITEMS", "256"))
+_EVENTS_PAGE_CACHE_LOCK = threading.Lock()
+_EVENTS_PAGE_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any], str]] = {}
+
+
+def _events_page_cache_get(key: tuple[str, int, int]) -> tuple[dict[str, Any], str] | None:
+    if _EVENTS_PAGE_CACHE_TTL_SEC <= 0:
+        return None
+    now = time.time()
+    with _EVENTS_PAGE_CACHE_LOCK:
+        item = _EVENTS_PAGE_CACHE.get(key)
+        if not item:
+            return None
+        ts, payload, etag = item
+        if (now - ts) > float(_EVENTS_PAGE_CACHE_TTL_SEC):
+            try:
+                del _EVENTS_PAGE_CACHE[key]
+            except Exception:
+                pass
+            return None
+        return payload, etag
+
+
+def _events_page_cache_put(key: tuple[str, int, int], payload: dict[str, Any], etag: str) -> None:
+    if _EVENTS_PAGE_CACHE_TTL_SEC <= 0:
+        return
+    now = time.time()
+    with _EVENTS_PAGE_CACHE_LOCK:
+        # Simple eviction: keep dict bounded.
+        if len(_EVENTS_PAGE_CACHE) >= max(8, int(_EVENTS_PAGE_CACHE_MAX_ITEMS)):
+            # Drop oldest ~25% entries.
+            items = sorted(_EVENTS_PAGE_CACHE.items(), key=lambda kv: kv[1][0])
+            drop_n = max(1, len(items) // 4)
+            for i in range(drop_n):
+                try:
+                    del _EVENTS_PAGE_CACHE[items[i][0]]
+                except Exception:
+                    pass
+        _EVENTS_PAGE_CACHE[key] = (now, payload, etag)
+
+
+def _make_etag(*parts: Any) -> str:
+    # Stable weak ETag (quoted) derived from a short SHA1.
+    s = "|".join(str(p) for p in parts)
+    h = hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f'W/"{h}"'
+
+
+@app.get("/events_page", response_model=EventsPageOut)
+def events_page(req: Request, limit: int = 100, account_id: str = "", before_id: int = 0):
+    """
+    Cursor-paginated events for the explorer.
+
+    - Returns up to `limit` events.
+    - If `before_id` is provided (>0), only return events with id < before_id.
+    - If `account_id` is provided, filter by that account.
+
+    Caching:
+    - Small in-memory TTL cache (default 5s) keyed by (account_id, before_id, limit).
+
+    HTTP cache:
+    - Returns an ETag and honors If-None-Match with 304 Not Modified.
+    """
+    limit = int(limit) if isinstance(limit, int) else 100
+    if limit < 1:
+        limit = 1
+
+    # keep pages small-ish for UX and server
+    MAX_EVENTS_PAGE = 500
+    if limit > MAX_EVENTS_PAGE:
+        limit = MAX_EVENTS_PAGE
+
+    acc = (account_id or "").strip()
+    try:
+        before_id = int(before_id or 0)
+    except Exception:
+        before_id = 0
+
+    cache_key = (acc, int(before_id), int(limit))
+
+    # 1) Serve from TTL cache if present.
+    cached = _events_page_cache_get(cache_key)
+    if cached is not None:
+        payload, etag = cached
+        inm = (req.headers.get("if-none-match") or "").strip()
+        if inm and inm == etag:
+            # Not modified
+            return Response(status_code=304, headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=10",
+            })
+        return Response(
+            content=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+            media_type="application/json",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=10",
+            },
+        )
+
+    con = db()
+    try:
+        row = con.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()
+        newest_id = int(row[0] or 0) if row else 0
+
+        where = []
+        params: list[Any] = []
+
+        if acc:
+            where.append("account_id=?")
+            params.append(acc)
+        if before_id > 0:
+            where.append("id < ?")
+            params.append(before_id)
+
+        sql = (
+            "SELECT id, ts, type, account_id, amount, other, meta "
+            "FROM events "
+        )
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        rows = con.execute(sql, tuple(params)).fetchall()
+
+        events_out: list[dict[str, Any]] = []
+        min_id: TypingOptional[int] = None
+
+        for r in rows:
+            meta_obj: Dict[str, Any] = {}
+            mid = r[6]
+            if isinstance(mid, str) and mid:
+                try:
+                    meta_obj = json.loads(mid)
+                    if not isinstance(meta_obj, dict):
+                        meta_obj = {}
+                except Exception:
+                    meta_obj = {}
+
+            rid = int(r[0])
+            if min_id is None or rid < min_id:
+                min_id = rid
+
+            events_out.append({
+                "id": rid,
+                "ts": int(r[1] or 0),
+                "type": str(r[2] or ""),
+                "account_id": (str(r[3]) if r[3] is not None else None),
+                "amount": (int(r[4]) if r[4] is not None else None),
+                "other": (str(r[5]) if r[5] is not None else None),
+                "meta": meta_obj,
+            })
+
+        # Ascending for UI rendering
+        events_out.reverse()
+
+        next_before_id = int(min_id) if (min_id is not None and min_id > 1) else None
+
+        payload: dict[str, Any] = {
+            "newest_id": newest_id,
+            "next_before_id": next_before_id,
+            "events": events_out,
+        }
+
+        # ETag: include newest_id (global freshness), the cursor params, and the page content fingerprint.
+        # Using min_id + count makes it stable and cheap.
+        etag = _make_etag(newest_id, acc, before_id, limit, (min_id or 0), len(events_out))
+
+        # Store in TTL cache
+        _events_page_cache_put(cache_key, payload, etag)
+
+        inm = (req.headers.get("if-none-match") or "").strip()
+        if inm and inm == etag:
+            return Response(status_code=304, headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=10",
+            })
+
+        return Response(
+            content=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+            media_type="application/json",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=10",
+            },
+        )
+    finally:
+        con.close()
+
+# ---------------------------
 # /transfer endpoint: Move credits to another address
 # ---------------------------
 
@@ -1503,11 +1645,6 @@ def transfer(data: TransferIn, req: Request):
         con.close()
 
 
-def _supported_currency(sym: str) -> bool:
-    sym = (sym or "").strip().upper()
-    return bool(sym) and sym in COINS_CONFIG
-
-
 def _lock_credits_atomic(con: sqlite3.Connection, account_id: str, amount: int) -> None:
     """Move credits -> locked_credits atomically. Raises ValueError on failure."""
     if amount <= 0:
@@ -1567,167 +1704,6 @@ def _burn_locked_credits_atomic(con: sqlite3.Connection, account_id: str, amount
     )
     if cur.rowcount != 1:
         raise ValueError("insufficient locked credits or unknown account")
-
-
-def _transfer_locked_credits_atomic(
-    con: sqlite3.Connection,
-    from_account_id: str,
-    to_account_id: str,
-    amount: int,
-) -> None:
-    """Move `amount` credits from `from_account_id.locked_credits` -> `to_account_id.credits`.
-
-    IMPORTANT:
-    - This function assumes the caller already started a DB transaction (e.g., BEGIN IMMEDIATE).
-    - It does not COMMIT/ROLLBACK by itself.
-    """
-    amount = int(amount)
-    if amount <= 0:
-        raise ValueError("amount must be positive")
-
-    # Deduct from source locked balance
-    cur = con.execute(
-        """
-        UPDATE accounts
-        SET locked_credits = locked_credits - ?
-        WHERE account_id = ? AND locked_credits >= ?
-        """,
-        (amount, str(from_account_id), amount),
-    )
-    if cur.rowcount != 1:
-        raise ValueError("insufficient locked balance or unknown source account")
-
-    # Credit recipient available balance
-    cur = con.execute(
-        """
-        UPDATE accounts
-        SET credits = credits + ?
-        WHERE account_id = ?
-        """,
-        (amount, str(to_account_id)),
-    )
-    if cur.rowcount != 1:
-        raise ValueError("recipient account not found")
-
-
-# ---------------------------
-# Micro-DEX: mount router
-# ---------------------------
-app.include_router(
-    create_dex_router(
-        db_func=db,
-        auth_func=auth_account,
-        now_unix_func=now_unix,
-        is_valid_address_func=is_valid_address,
-        supported_currency_func=_supported_currency,
-        trade_ttl_sell_sec=DEX_TRADE_TTL_SELL_SEC,
-        trade_ttl_buy_sec=DEX_TRADE_TTL_BUY_SEC,
-        allowed_sides=set(DEX_ALLOWED_SIDES),
-        lock_credits_atomic_func=_lock_credits_atomic,
-        unlock_credits_atomic_func=_unlock_credits_atomic,
-    ),
-    prefix="/dex",
-)
-
-app.include_router(
-    create_dex_admin_router(
-        db,
-        require_admin,
-        now_unix,
-        _transfer_locked_credits_atomic,
-    ),
-    prefix="/admin/dex",
-)
-
-
-def settle_trade_if_confirmed(con: sqlite3.Connection, trade_id: int) -> bool:
-    """Settle exactly once if trade is CONFIRMED.
-
-    Settlement rule:
-      maker.locked_credits -> taker.credits
-
-    Returns True if settled, False if not eligible.
-    """
-    con.execute("BEGIN IMMEDIATE;")
-    try:
-        row = con.execute(
-            """
-            SELECT state, side, maker_account_id, taker_account_id, credits_amount
-            FROM dex_trades
-            WHERE id=?
-            """,
-            (trade_id,),
-        ).fetchone()
-
-        if not row:
-            con.execute("ROLLBACK;")
-            raise ValueError("unknown trade")
-
-        state, side, maker, taker, amt = row
-        side = str(side).upper()
-        amt = int(amt)
-
-        if state != "CONFIRMED":
-            con.execute("ROLLBACK;")
-            return False
-
-        # Guard: flip state first to prevent double-settlement on retries/races.
-        cur = con.execute(
-            """
-            UPDATE dex_trades
-            SET state='SETTLED', settled_at=?
-            WHERE id=? AND state='CONFIRMED'
-            """,
-            (now_unix(), trade_id),
-        )
-        if cur.rowcount != 1:
-            con.execute("ROLLBACK;")
-            return False
-
-        # Side-aware settlement:
-        # - SELL_CREDITS: maker.locked_credits -> taker.credits
-        # - BUY_CREDITS:  taker.locked_credits -> maker.credits
-        if side == "SELL_CREDITS":
-            src = str(maker)
-            dst = str(taker)
-        elif side == "BUY_CREDITS":
-            src = str(taker)
-            dst = str(maker)
-        else:
-            con.execute("ROLLBACK;")
-            raise ValueError(f"unsupported trade side for settlement: {side}")
-
-        # Debit source locked
-        cur = con.execute(
-            """
-            UPDATE accounts
-            SET locked_credits = locked_credits - ?
-            WHERE account_id=? AND locked_credits >= ?
-            """,
-            (amt, src, amt),
-        )
-        if cur.rowcount != 1:
-            con.execute("ROLLBACK;")
-            raise ValueError("insufficient locked credits for settlement")
-
-        # Credit destination available credits
-        cur = con.execute(
-            "UPDATE accounts SET credits = credits + ? WHERE account_id=?",
-            (amt, dst),
-        )
-        if cur.rowcount != 1:
-            con.execute("ROLLBACK;")
-            raise ValueError("unknown destination account")
-
-        con.execute("COMMIT;")
-        return True
-
-    except Exception:
-        try:
-            con.execute("ROLLBACK;")
-        except Exception:
-            pass
-        raise
 
 
 @app.get("/redeem_log", response_model=List[RedeemLogEntryOut])
@@ -2077,12 +2053,6 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         raise
     finally:
         con.close()
-
-
-@app.get("/admin/ping")
-def admin_ping(req: Request):
-    require_admin(req)
-    return {"ok": True}
 
 
 @app.get("/debug/ip")

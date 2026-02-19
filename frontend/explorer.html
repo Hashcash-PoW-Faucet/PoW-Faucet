@@ -31,25 +31,32 @@
     .amount-pos { color: #7ee787; }
     .amount-neg { color: #ff7b72; }
     .meta { white-space: pre-wrap; word-break: break-word; }
+    .spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid #263455;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      display: inline-block;
+      vertical-align: -2px;
+      animation: spin 0.8s linear infinite;
+      margin-right: 6px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
 <header>
   <div class="wrap">
-    <h1>HashCash Explorer</h1>
+    <h1>Hashcash Explorer</h1>
 
     <div class="controls">
       <input id="accountId" class="mono" placeholder="HCC address or txid" />
 
-      <label class="pill">Page size
-        <select id="limit">
-          <option>50</option>
-          <option selected>100</option>
-          <option>200</option>
-        </select>
-      </label>
-
       <button id="refreshBtn">Search</button>
+      <button id="firstBtn" title="Back to newest (first page)">⏮ First</button>
       <button id="prevBtn" title="Previous page">◀ Prev</button>
       <button id="nextBtn" title="Next page">Next ▶</button>
       <!-- Auto/interval controls removed -->
@@ -61,10 +68,12 @@
     <div class="status">
       <span class="pill" id="countPill">0 events</span>
       <span class="pill" id="lastPill">last: —</span>
-      <span class="pill" id="pagePill">page 1/1</span>
+      <span class="pill" id="pagePill">page 1</span>
+      <span class="pill muted" id="cdPill" style="display:none;">refresh in 30s</span>
+      <span class="pill" id="loadingPill" style="display:none;"><span class="spinner"></span>Searching…</span>
       <span class="pill" id="balPill" style="display:none;">Balance: — HCC</span>
       <span class="pill" id="lockPill" style="display:none;">Locked: — HCC</span>
-      <span class="pill muted" id="hintPill">Tip: enter an HCC address or a txid and click Search. Auto refreshes every 30s.</span>
+      <span class="pill muted" id="hintPill">...</span>
       <span class="pill err" id="errPill" style="display:none;"></span>
     </div>
   </div>
@@ -91,8 +100,88 @@
   const DEFAULT_API_BASE = "https://hashcash-pow-faucet.dynv6.net/api";
   const $ = (id) => document.getElementById(id);
 
-  const FETCH_LIMIT = 5000;   // always pull this many from backend
-  let currentPage = 0;        // 0-based
+  const PAGE_SIZE = 50;      // fixed page size (smaller = snappier UI)
+  let currentPage = 0;
+
+  // Cursor pagination
+  let newestId = 0;
+  let nextBeforeId = null;
+
+  // For Prev navigation: store the cursor we used for each page.
+  const pageCursors = [null]; // page 0 uses before_id=null
+
+    // ----------------------------
+  // Page caching + prefetch
+  // ----------------------------
+  const PAGE_CACHE_MAX = 16; // keep last N pages in memory
+  const pageDataCache = new Map(); // key: pageIndex -> EventsPageOut
+  const prefetchCache = new Map(); // key: beforeIdKey -> EventsPageOut (beforeIdKey is string)
+  const inflightPrefetch = new Map(); // key -> Promise
+
+  function beforeKey(beforeId) {
+    return (beforeId && Number(beforeId) > 0) ? String(beforeId) : "newest";
+  }
+
+  function prunePageCache() {
+    // keep most recent PAGE_CACHE_MAX entries around currentPage
+    const keys = Array.from(pageDataCache.keys()).sort((a,b) => a-b);
+    if (keys.length <= PAGE_CACHE_MAX) return;
+
+    // prefer keeping a window around currentPage
+    const keepMin = Math.max(0, currentPage - Math.floor(PAGE_CACHE_MAX / 2));
+    const keepMax = keepMin + PAGE_CACHE_MAX - 1;
+
+    for (const k of keys) {
+      if (k < keepMin || k > keepMax) pageDataCache.delete(k);
+      if (pageDataCache.size <= PAGE_CACHE_MAX) break;
+    }
+
+    // if still too big, drop oldest
+    while (pageDataCache.size > PAGE_CACHE_MAX) {
+      const kk = Math.min(...pageDataCache.keys());
+      pageDataCache.delete(kk);
+    }
+  }
+
+  async function prefetchByBeforeId(beforeId) {
+    const key = beforeKey(beforeId);
+    if (prefetchCache.has(key)) return;
+    if (inflightPrefetch.has(key)) return;
+
+    // Don't prefetch if user is already doing an interactive scan/search
+    if (isBusy) return;
+
+    const p = (async () => {
+      try {
+        const data = await fetchEventsPage(beforeId);
+        prefetchCache.set(key, data);
+      } catch {
+        // ignore
+      } finally {
+        inflightPrefetch.delete(key);
+      }
+    })();
+
+    inflightPrefetch.set(key, p);
+  }
+
+  async function prefetchNextTwoPages() {
+    // Page 0: beforeId=null (newest). Next pages use next_before_id chain.
+    // Strategy:
+    // - prefetch nextBeforeId (page+1)
+    // - if that prefetch returns quickly, also prefetch its next_before_id (page+2)
+    if (!nextBeforeId) return;
+
+    const first = nextBeforeId;
+    await prefetchByBeforeId(first);
+
+    // best-effort: if we already have the first prefetched, chain to second
+    const k1 = beforeKey(first);
+    const d1 = prefetchCache.get(k1);
+    if (d1 && d1.next_before_id) {
+      await prefetchByBeforeId(d1.next_before_id);
+    }
+  }
 
   function normalizeTxInput(s) {
     return (s || "").trim();
@@ -102,6 +191,27 @@
     const t = normalizeTxInput(s);
     // our computed txid is 16 hex chars (fnv1a64)
     return /^[0-9a-fA-F]{16}$/.test(t);
+  }
+
+  function looksLikeAccountId(s) {
+    const t = (s || "").trim();
+    return /^[0-9a-fA-F]{40}$/.test(t);
+  }
+
+  async function navigateToAccount(acc) {
+    const a = (acc || "").trim();
+    if (!a) return;
+    // Stop any in-flight request and reset paging
+    abortInflight();
+    prefetchCache.clear();
+    inflightPrefetch.clear();
+    pageDataCache.clear();
+    $("accountId").value = a;
+    currentPage = 0;
+    pageCursors.length = 0;
+    pageCursors.push(null);
+    updateUrlBar();
+    await fetchEvents(null);
   }
 
   function fmtTime(ts) {
@@ -161,9 +271,6 @@
     const type = e.type || "";
     const meta = (e.meta && typeof e.meta === "object") ? e.meta : {};
     const requestId = (meta.request_id ?? "").toString();
-    if (requestId) {
-      return fnv1a64Hex(stableEventKey({ kind: "redeem", request_id: requestId }));
-    }
 
     // Group redeem-ish events by request_id if available
     if (requestId && (
@@ -258,15 +365,16 @@
     return out;
   }
 
-  function buildUrl() {
+  function buildUrl(beforeId) {
     const apiBase = (DEFAULT_API_BASE || "").replace(/\/+$/, "");
-    const limit = FETCH_LIMIT;
     const raw = $("accountId").value.trim();
     const isTx = looksLikeTxid(raw);
     const acc = isTx ? "" : raw;
-    const u = new URL((apiBase || "") + "/events", window.location.origin);
-    u.searchParams.set("limit", String(limit));
+
+    const u = new URL((apiBase || "") + "/events_page", window.location.origin);
+    u.searchParams.set("limit", String(PAGE_SIZE));
     if (acc) u.searchParams.set("account_id", acc);
+    if (beforeId && Number(beforeId) > 0) u.searchParams.set("before_id", String(beforeId));
     return u.toString();
   }
 
@@ -278,6 +386,41 @@
     const u = new URL((apiBase || "") + "/account", window.location.origin);
     if (acc) u.searchParams.set("account_id", acc);
     return u.toString();
+  }
+
+  let activeSearchToken = 0;
+  let inflightController = null;
+  let isBusy = false; // true while scanning txid or any fetch is in flight
+
+  function abortInflight() {
+    try {
+      if (inflightController) inflightController.abort();
+    } catch {}
+    inflightController = null;
+  }
+
+  function setLoading(on, label) {
+    const el = $("loadingPill");
+    isBusy = !!on;
+    if (!el) return;
+    if (!on) {
+      el.style.display = "none";
+      el.lastChild && (el.lastChild.textContent = "Searching…");
+      // When we stop loading, also abort any lingering in-flight request.
+      abortInflight();
+      return;
+    }
+    el.style.display = "inline-flex";
+    // The pill contains: <span class="spinner"></span>TEXT
+    // Update the text node after the spinner.
+    if (typeof label === "string" && label) {
+      // The second child is a text node in most browsers; fall back to setting innerHTML safely.
+      try {
+        el.childNodes[1].textContent = label;
+      } catch {
+        el.innerHTML = '<span class="spinner"></span>' + label;
+      }
+    }
   }
 
   function setErr(msg) {
@@ -317,9 +460,14 @@
     } catch { setBalancePills(null, null); }
   }
 
-  function render(events) {
+  function renderPage(data) {
     const tbody = $("rows");
     tbody.innerHTML = "";
+
+    newestId = (data && typeof data.newest_id === "number") ? data.newest_id : 0;
+    nextBeforeId = (data && (data.next_before_id !== undefined)) ? data.next_before_id : null;
+
+    const events = (data && Array.isArray(data.events)) ? data.events : [];
 
     const raw = $("accountId").value.trim();
     const isTx = looksLikeTxid(raw);
@@ -330,36 +478,21 @@
     if (txFilter) {
       const needle = txFilter.toLowerCase();
       baseEvents = events.filter(ev => {
-        try {
-          const tid = (computeTxId(ev) || "").toLowerCase();
-          return tid === needle;
-        } catch { return false; }
+        try { return (computeTxId(ev) || "").toLowerCase() === needle; }
+        catch { return false; }
       });
     }
 
     const displayEvents = prepareDisplayEvents(baseEvents, hasAccountFilter);
 
-    const pageSize = Math.max(1, parseInt($("limit").value, 10) || 200);
-    const totalPages = Math.max(1, Math.ceil(displayEvents.length / pageSize));
-    if (currentPage >= totalPages) currentPage = totalPages - 1;
-    if (currentPage < 0) currentPage = 0;
+    $("pagePill").textContent = `page ${currentPage + 1}`;
 
-    // Newest-first paging.
-    // displayEvents is chronological (oldest -> newest). We page from the end.
-    const total = displayEvents.length;
-    const startIdx = total - 1 - (currentPage * pageSize); // index of newest item on this page
-    const endExclusive = Math.max(-1, startIdx - pageSize); // stop when i == endExclusive
-
-    $("pagePill").textContent = `page ${currentPage + 1}/${totalPages}`;
-
+    // Render newest-first within page
     let lastTxRendered = "";
-
-    for (let i = startIdx; i > endExclusive; i--) {
-      if (i < 0 || i >= total) continue;
+    for (let i = displayEvents.length - 1; i >= 0; i--) {
       const e = displayEvents[i];
       const tr = document.createElement("tr");
 
-      // Grouping: if same txid as previous rendered row, blank Time/Tx
       const curTx = (e.txid || "");
       const sameTxAsPrev = lastTxRendered && (lastTxRendered === curTx);
       if (!sameTxAsPrev) lastTxRendered = curTx;
@@ -372,7 +505,6 @@
       const tdTx = document.createElement("td");
       tdTx.className = "mono";
       const fullTx = e.txid || "";
-      const shortTx = fullTx ? (fullTx.slice(0, 8) + "…" + fullTx.slice(-4)) : "";
       tdTx.textContent = sameTxAsPrev ? "" : fullTx;
       if (fullTx && !sameTxAsPrev) tdTx.title = fullTx;
       tr.appendChild(tdTx);
@@ -389,7 +521,23 @@
 
       const tdAcc = document.createElement("td");
       tdAcc.className = "mono";
-      tdAcc.textContent = e.account_id || "";
+      const accVal = (e.account_id || "").trim();
+      if (accVal && looksLikeAccountId(accVal)) {
+        const a = document.createElement("a");
+        a.href = `${window.location.pathname}?account_id=${encodeURIComponent(accVal)}`;
+        a.textContent = accVal;
+        a.style.color = "#93c5fd";
+        a.style.textDecoration = "none";
+        a.addEventListener("mouseover", () => { a.style.textDecoration = "underline"; });
+        a.addEventListener("mouseout", () => { a.style.textDecoration = "none"; });
+        a.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          await navigateToAccount(accVal);
+        });
+        tdAcc.appendChild(a);
+      } else {
+        tdAcc.textContent = accVal;
+      }
       tr.appendChild(tdAcc);
 
       const tdOther = document.createElement("td");
@@ -398,8 +546,27 @@
       tdOther.style.overflow = "hidden";
       tdOther.style.textOverflow = "ellipsis";
       tdOther.style.whiteSpace = "nowrap";
-      tdOther.textContent = e.other || "";
-      if (e.other) tdOther.title = e.other;
+
+      const otherVal = (e.other || "").trim();
+      if (otherVal && looksLikeAccountId(otherVal)) {
+        const a2 = document.createElement("a");
+        a2.href = `${window.location.pathname}?account_id=${encodeURIComponent(otherVal)}`;
+        a2.textContent = otherVal;
+        a2.title = otherVal;
+        a2.style.color = "#93c5fd";
+        a2.style.textDecoration = "none";
+        a2.addEventListener("mouseover", () => { a2.style.textDecoration = "underline"; });
+        a2.addEventListener("mouseout", () => { a2.style.textDecoration = "none"; });
+        a2.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          await navigateToAccount(otherVal);
+        });
+        tdOther.appendChild(a2);
+      } else {
+        tdOther.textContent = otherVal;
+        if (otherVal) tdOther.title = otherVal;
+      }
+
       tr.appendChild(tdOther);
 
       const tdMeta = document.createElement("td");
@@ -437,82 +604,258 @@
       tbody.appendChild(tr);
     }
 
-    // Update count pill to show both total matched and shown.
-    const shown = Math.min(pageSize, displayEvents.length - currentPage * pageSize);
-    $("countPill").textContent = `${displayEvents.length} matched (showing ${Math.max(0, shown)})`;
+    $("countPill").textContent = `${displayEvents.length} events`;
     const newest = events.length ? fmtTime(events[events.length - 1].ts) : "—";
     $("lastPill").textContent = `last: ${newest}`;
+
+    $("firstBtn").disabled = (currentPage <= 0);
+    $("prevBtn").disabled = (currentPage <= 0);
+    $("nextBtn").disabled = (!nextBeforeId);
+
+    // Cache the rendered page for instant Prev/Back and reduce network jitter.
+    try {
+      pageDataCache.set(currentPage, data);
+      prunePageCache();
+    } catch {}
+
+    // Kick off background prefetch for faster Next clicks (next 2 pages).
+    // Fire-and-forget, but avoid piling up during interactive operations.
+    prefetchNextTwoPages();
   }
 
-  async function fetchEvents() {
+  async function fetchEventsPage(beforeId = null) {
+    // Prevent overlapping requests (e.g. fast clicking Next, or auto-refresh while paging).
+    abortInflight();
+    inflightController = new AbortController();
+
+    const url = buildUrl(beforeId);
+    const r = await fetch(url, {
+      headers: { "accept": "application/json" },
+      signal: inflightController.signal,
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`HTTP ${r.status}: ${t || r.statusText}`);
+    }
+    const data = await r.json();
+    return data;
+  }
+
+  async function fetchEvents(beforeId = null, forceNetwork = false) {
     setErr("");
-    await fetchBalance();
-    const url = buildUrl();
-    try {
-      const r = await fetch(url, { headers: { "accept": "application/json" }});
-      if (!r.ok) {
-        const t = await r.text().catch(() => "");
-        throw new Error(`HTTP ${r.status}: ${t || r.statusText}`);
+
+    // Show spinner for normal paging/address searches.
+    // (TXID scans handle their own spinner in the Search handler.)
+    setLoading(true, "Loading…");
+
+    // If this is a navigation fetch and we already have cached data for this page, render immediately.
+    // IMPORTANT: auto-refresh must bypass cache, otherwise it will never show new events.
+    if (!forceNetwork && beforeId === pageCursors[currentPage]) {
+      const cached = pageDataCache.get(currentPage);
+      if (cached) {
+        try { await fetchBalance(); } catch {}
+        renderPage(cached);
+        setLoading(false);
+        return;
       }
-      const data = await r.json();
-      if (!Array.isArray(data)) throw new Error("Bad response: expected JSON array");
-      render(data);
+    }
+
+    try {
+      await fetchBalance();
+      const data = await fetchEventsPage(beforeId);
+      renderPage(data);
     } catch (e) {
+      if (e && (e.name === "AbortError" || String(e).includes("AbortError"))) {
+        // Silent: aborted due to a newer request.
+        return;
+      }
       setErr(e.message || String(e));
-      render([]);
+      renderPage({ newest_id: 0, next_before_id: null, events: [] });
+    } finally {
+      setLoading(false);
     }
   }
 
   function applyQueryParams() {
     const qs = new URLSearchParams(window.location.search);
     const acc = (qs.get("account_id") || "").trim();
-    const page = qs.get("page");
     if (acc) $("accountId").value = acc;
-    if (page !== null) {
-      const p = parseInt(page, 10);
-      currentPage = Number.isFinite(p) && p >= 0 ? p : 0;
-    }
-    const ps = qs.get("page_size");
-    if (ps) {
-      const v = String(ps);
-      const opt = Array.from($("limit").options).some(o => o.value === v);
-      if (opt) $("limit").value = v;
-    }
+
+    // Always start at newest page (cursor pagination can't restore old pages from URL)
+    currentPage = 0;
+    pageCursors.length = 0;
+    pageCursors.push(null);
   }
 
   function updateUrlBar() {
     const qs = new URLSearchParams();
     const acc = $("accountId").value.trim();
     if (acc) qs.set("account_id", acc);
-    qs.set("page", String(currentPage));
-    // keep page size in URL for convenience
-    qs.set("page_size", $("limit").value);
+
     const newUrl = `${window.location.pathname}?${qs.toString()}`;
     history.replaceState({}, "", newUrl);
   }
 
+  $("refreshBtn").addEventListener("click", async () => {
+    // Cancel any prior in-flight search
+    const token = ++activeSearchToken;
 
-  $("refreshBtn").addEventListener("click", async () => { updateUrlBar(); await fetchEvents(); });
-  $("prevBtn").addEventListener("click", async () => {
-    if (currentPage > 0) currentPage -= 1;
+    prefetchCache.clear();
+    inflightPrefetch.clear();
+    pageDataCache.clear();
+
+    currentPage = 0;
+    pageCursors.length = 0;
+    pageCursors.push(null);
     updateUrlBar();
-    await fetchEvents();
+
+    const raw = $("accountId").value.trim();
+    const isTx = looksLikeTxid(raw);
+
+    if (!isTx) {
+      await fetchEvents(null);
+      return;
+    }
+
+    // TXID quick fix: scan up to 50 pages (PAGE_SIZE each) until we find a match.
+    setErr("");
+    setLoading(true, "Searching…");
+
+    let beforeId = null;
+    let found = false;
+
+    try {
+      for (let page = 0; page < 50; page++) {
+        if (token !== activeSearchToken) return; // cancelled
+
+        setLoading(true, `Searching… (${page + 1}/50)`);
+
+        const data = await fetchEventsPage(beforeId);
+        const events = (data && Array.isArray(data.events)) ? data.events : [];
+        const needle = normalizeTxInput(raw).toLowerCase();
+
+        // Does this page contain the txid?
+        let pageHas = false;
+        for (const ev of events) {
+          try {
+            const tx = (computeTxId(ev) || "").toLowerCase();
+            if (tx === needle) { pageHas = true; break; }
+          } catch {}
+        }
+
+        // Store cursor for this page so Prev works after we land here.
+        pageCursors[page] = beforeId;
+
+        if (pageHas) {
+          currentPage = page;
+          updateUrlBar();
+          await fetchBalance();
+          renderPage(data); // renderPage will filter to just this txid
+          found = true;
+          break;
+        }
+
+        // Advance cursor
+        const nb = (data && (data.next_before_id !== undefined)) ? data.next_before_id : null;
+        if (!nb) {
+          // No more pages
+          currentPage = page;
+          updateUrlBar();
+          await fetchBalance();
+          renderPage(data);
+          break;
+        }
+        beforeId = nb;
+      }
+
+      if (!found) {
+        // If we scanned and didn't find, show a friendly message.
+        setErr("txid not found in the last 50 pages");
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+      renderPage({ newest_id: 0, next_before_id: null, events: [] });
+    } finally {
+      if (token === activeSearchToken) setLoading(false);
+    }
+  });
+  $("firstBtn").addEventListener("click", async () => {
+    abortInflight();
+    if (currentPage <= 0) return;
+
+    currentPage = 0;
+    pageCursors.length = 0;
+    pageCursors.push(null);
+    updateUrlBar();
+
+    const cached = pageDataCache.get(0);
+    if (cached) {
+      try { await fetchBalance(); } catch {}
+      renderPage(cached);
+      return;
+    }
+    await fetchEvents(null);
+  });
+  $("prevBtn").addEventListener("click", async () => {
+    abortInflight();
+    if (currentPage <= 0) return;
+
+    currentPage -= 1;
+    updateUrlBar();
+
+    const cached = pageDataCache.get(currentPage);
+    if (cached) {
+      try { await fetchBalance(); } catch {}
+      renderPage(cached);
+      return;
+    }
+
+    await fetchEvents(pageCursors[currentPage]);
   });
   $("nextBtn").addEventListener("click", async () => {
+    abortInflight();
+    if (!nextBeforeId) return;
+
+    const targetBefore = nextBeforeId;
+
     currentPage += 1;
+    pageCursors[currentPage] = targetBefore;
     updateUrlBar();
-    await fetchEvents();
+
+    // 1) If we already prefetched this page, render instantly.
+    const k = beforeKey(targetBefore);
+    const pref = prefetchCache.get(k);
+    if (pref) {
+      try { await fetchBalance(); } catch {}
+      renderPage(pref);
+      return;
+    }
+
+    // 2) Otherwise, fetch normally.
+    await fetchEvents(targetBefore);
   });
   $("clearBtn").addEventListener("click", async () => {
+    prefetchCache.clear();
+    inflightPrefetch.clear();
+    pageDataCache.clear();
     $("accountId").value = "";
     currentPage = 0;
+    pageCursors.length = 0;
+    pageCursors.push(null);
     updateUrlBar();
     setBalancePills(null, null);
-    await fetchEvents();
+    await fetchEvents(null);
   });
-  // Auto/interval event listeners removed
-  $("accountId").addEventListener("change", () => { currentPage = 0; updateUrlBar(); fetchEvents(); });
-  $("limit").addEventListener("change", () => { currentPage = 0; updateUrlBar(); fetchEvents(); });
+  $("accountId").addEventListener("change", () => {
+    prefetchCache.clear();
+    inflightPrefetch.clear();
+    pageDataCache.clear();
+    currentPage = 0;
+    pageCursors.length = 0;
+    pageCursors.push(null);
+    updateUrlBar();
+    fetchEvents(null);
+  });
 
   $("shareBtn").addEventListener("click", async () => {
     updateUrlBar();
@@ -520,18 +863,154 @@
     try {
       await navigator.clipboard.writeText(link);
       $("hintPill").textContent = "Link copied ✅";
-      setTimeout(() => $("hintPill").textContent = "Tip: enter an HCC address or a txid)and click Search. Auto refreshes every 30s.", 1200);
+      setTimeout(() => $("hintPill").textContent = "Tip: enter an HCC address or a txid and click Search. Auto refreshes every 30s.", 1200);
     } catch {
       prompt("Copy this link:", link);
     }
   });
 
-  applyQueryParams();
-  updateUrlBar();
-  fetchBalance();
-  fetchEvents();
+  // ----------------------------
+  // Boot: load data immediately
+  // ----------------------------
+  let didRenderOnce = false;
+  const _origRenderPage = renderPage;
+  renderPage = function(data) {
+    didRenderOnce = true;
+    return _origRenderPage(data);
+  };
+
+  async function bootNow() {
+    // Ensure we start clean and show the first page right away.
+    try {
+      setErr("");
+      setLoading(true, "Loading…");
+      applyQueryParams();
+      updateUrlBar();
+      await fetchBalance();
+      await fetchEvents(null);
+    } catch {
+      // ignore; auto-refresh/visibility handlers will retry
+    } finally {
+      setLoading(false);
+      resetAutoCountdown();
+    }
+
+    // Safari/Firefox sometimes delay the first async fetch when the tab is just created.
+    // If we still haven't rendered anything shortly after boot, retry once.
+    setTimeout(() => {
+      if (!didRenderOnce && document.visibilityState === "visible") {
+        fetchEvents(null).catch(() => {});
+      }
+    }, 800);
+  }
+
+  // Run boot after the current call stack so all functions/handlers are registered.
+  setTimeout(bootNow, 0);
+
+  // Also retry on DOM ready / load for browsers with quirky scheduling.
+  document.addEventListener("DOMContentLoaded", () => setTimeout(bootNow, 0), { once: true });
+  window.addEventListener("load", () => setTimeout(bootNow, 0), { once: true });
+
   // Fixed auto refresh every 30 seconds (no UI control)
-  setInterval(fetchEvents, 30 * 1000);
+  // Notes:
+  // - Browsers may throttle timers heavily in background tabs.
+  // - When the tab becomes visible again, we force a refresh.
+  const AUTO_REFRESH_MS = 30 * 1000;
+  let lastAutoKick = 0;
+
+  // Countdown UI for next refresh
+  let nextAutoAtMs = Date.now() + AUTO_REFRESH_MS;
+
+  function setCountdownVisible(on) {
+    const el = $("cdPill");
+    if (!el) return;
+    el.style.display = on ? "inline-flex" : "none";
+  }
+
+  function updateCountdownLabel() {
+    const el = $("cdPill");
+    if (!el) return;
+
+    // Only show countdown when it makes sense:
+    // - on newest page
+    // - tab visible
+    // - not busy
+    if (!canAutoRefresh()) {
+      setCountdownVisible(false);
+      return;
+    }
+
+    const now = Date.now();
+    let left = Math.ceil((nextAutoAtMs - now) / 1000);
+    if (!Number.isFinite(left)) left = 0;
+    if (left < 0) left = 0;
+
+    setCountdownVisible(true);
+    el.textContent = `refresh in ${left}s`;
+  }
+
+  function resetAutoCountdown() {
+    nextAutoAtMs = Date.now() + AUTO_REFRESH_MS;
+    updateCountdownLabel();
+  }
+
+  function canAutoRefresh() {
+    return document.visibilityState === "visible" && currentPage === 0 && !isBusy;
+  }
+
+  async function kickAutoRefresh(reason = "interval") {
+    const now = Date.now();
+
+    // Debounce: avoid double refreshes from focus+visibilitychange in quick succession.
+    if (now - lastAutoKick < 1200) return;
+    if (!canAutoRefresh()) return;
+
+    // If a fetch is already in flight or we are scanning, do nothing.
+    if (isBusy) return;
+
+    lastAutoKick = now;
+
+    // Schedule the NEXT refresh from *now* so the countdown matches reality,
+    // even if browsers delay timers.
+    nextAutoAtMs = now + AUTO_REFRESH_MS;
+    updateCountdownLabel();
+
+    try {
+      await fetchEvents(null, true);
+    } catch {
+      // ignore
+    }
+  }
+
+  setInterval(() => {
+    updateCountdownLabel();
+
+    // If the timer is due, refresh now. This avoids cases where the countdown hits 0
+    // but the 30s interval hasn't fired (timer drift / browser scheduling).
+    if (canAutoRefresh() && Date.now() >= nextAutoAtMs) {
+      kickAutoRefresh("due");
+    }
+  }, 1000);
+
+  // When returning to the tab, force a refresh (timers might have been throttled).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      // Ensure we aren't stuck in a "busy" state due to a throttled/paused fetch.
+      abortInflight();
+      setLoading(false);
+      resetAutoCountdown();
+      kickAutoRefresh("visible");
+    }
+  });
+
+  // Also refresh on window focus (some browsers don't fire visibilitychange reliably).
+  window.addEventListener("focus", () => {
+    abortInflight();
+    setLoading(false);
+    resetAutoCountdown();
+    kickAutoRefresh("focus");
+  });
+
 </script>
 </body>
 </html>
