@@ -12,6 +12,7 @@ Assumptions / format (matches our backup script convention):
 
 This script:
 - Optionally git-pulls the repo
+- If manifest.json contains multiple items, can select a DB by --db-name (matches item['db_name'])
 - Picks the latest snapshot (by filename mtime) unless --snapshot is given
 - Decrypts -> gunzips -> writes DB to target path atomically
 - Runs PRAGMA integrity_check on the restored DB
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import json
 import os
 import shutil
 import sqlite3
@@ -32,7 +34,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ------------------------- dotenv -------------------------
@@ -97,8 +99,21 @@ def run(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str]:
 def ensure_git_repo(repo: Path) -> None:
     if not repo.exists():
         raise SystemExit(f"Repo path does not exist: {repo}")
-    if not (repo / ".git").exists():
-        raise SystemExit(f"Not a git repo (missing .git): {repo}")
+    code, out = run(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo)
+    if code != 0 or out.strip() != "true":
+        raise SystemExit(f"Not a git repo: {repo}")
+
+
+def load_manifest(repo: Path) -> Optional[Dict[str, Any]]:
+    """Load manifest.json from repo root (best-effort)."""
+    p = repo / "manifest.json"
+    if not p.exists():
+        return None
+    try:
+        obj = json.loads(p.read_text("utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
 
 
 def git_pull(repo: Path) -> None:
@@ -133,6 +148,34 @@ def pick_latest(files: List[Path]) -> Path:
     # pick by mtime (robust across varying filenames)
     files2 = sorted(files, key=lambda p: (p.stat().st_mtime, str(p)), reverse=True)
     return files2[0]
+
+
+def pick_from_manifest(repo: Path, db_name: str) -> Optional[Path]:
+    """Pick the snapshot file for a given db_name from manifest.json (best-effort)."""
+    man = load_manifest(repo)
+    if not man:
+        return None
+    items = man.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+
+    want = (db_name or "").strip().lower()
+    if not want:
+        return None
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("db_name") or "").strip().lower()
+        if name != want:
+            continue
+        fn = str(it.get("snapshot_file") or "").strip()
+        if not fn:
+            return None
+        p = (repo / "snapshots" / fn).resolve()
+        return p if p.exists() else None
+
+    return None
 
 
 def require_openssl() -> str:
@@ -310,6 +353,21 @@ def main() -> int:
     ap.add_argument("--repo", default=os.environ.get("DB_BACKUP_REPO", "~/db-backup"), help="Local path to db-backup git repo")
     ap.add_argument("--out-db", default=os.environ.get("FAUCET_DB", "~/PoW-Faucet/backend/faucet.db"), help="Target DB path to write")
 
+    ap.add_argument(
+        "--db-name",
+        default=os.environ.get("RESTORE_DB_NAME", ""),
+        help=(
+            "Which DB to restore when manifest.json contains multiple items. "
+            "Matches manifest items[].db_name (e.g. 'faucet' or 'tipbot'). "
+            "If omitted, defaults to the stem of --out-db."
+        ),
+    )
+    ap.add_argument(
+        "--use-latest-file",
+        action="store_true",
+        help="If set and repo/LATEST exists, restore the snapshot referenced by LATEST (fallback mode).",
+    )
+
     ap.add_argument("--snapshots-dir", default=os.environ.get("SNAPSHOTS_DIR", ""), help="Snapshots directory (default: <repo>/snapshots)")
     ap.add_argument("--glob", action="append", help="Snapshot glob(s) within snapshots-dir (can repeat)")
 
@@ -348,7 +406,27 @@ def main() -> int:
         if not snap.exists():
             raise SystemExit(f"Snapshot not found: {snap}")
     else:
-        snap = pick_latest(files)
+        # 1) If manifest exists and we can select a db_name, prefer that.
+        db_name = (args.db_name or "").strip()
+        if not db_name:
+            # default: stem of output db path
+            db_name = cfg.out_db.stem
+
+        snap = pick_from_manifest(cfg.repo, db_name)
+
+        # 2) Optional: use LATEST pointer from repo root
+        if snap is None and args.use_latest_file:
+            lp = cfg.repo / "LATEST"
+            if lp.exists():
+                fn = lp.read_text("utf-8").strip()
+                if fn:
+                    cand = (cfg.repo / "snapshots" / fn).resolve()
+                    if cand.exists():
+                        snap = cand
+
+        # 3) Fallback: newest by glob
+        if snap is None:
+            snap = pick_latest(files)
 
     # Ensure required crypto tool is available for the selected snapshot.
     if snap.name.lower().endswith(".gpg"):

@@ -195,8 +195,12 @@ def main() -> int:
     )
     ap.add_argument(
         "--db",
-        default=os.environ.get("FAUCET_DB"),
-        help="Path to faucet_old.db (or set FAUCET_DB in backup.env)",
+        action="append",
+        default=None,
+        help=(
+            "Path to a SQLite DB to back up. Can be provided multiple times. "
+            "If omitted, uses FAUCET_DB and optional EXTRA_DBS from backup.env"
+        ),
     )
     ap.add_argument(
         "--repo",
@@ -211,18 +215,48 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if not args.db or not args.repo:
+    if not args.repo:
         if not env_loaded:
-            print("ERROR: missing --db/--repo and no backup.env loaded (expected ./backup.env)", file=sys.stderr)
+            print("ERROR: missing --repo and no backup.env loaded (expected ./backup.env)", file=sys.stderr)
         else:
-            print("ERROR: missing --db/--repo (set FAUCET_DB and DB_BACKUP_REPO in backup.env)", file=sys.stderr)
+            print("ERROR: missing --repo (set DB_BACKUP_REPO in backup.env)", file=sys.stderr)
         return 2
 
-    db_path = Path(os.path.expanduser(args.db)).resolve()
-    repo_dir = Path(os.path.expanduser(args.repo)).resolve()
-    if not db_path.exists():
-        print(f"ERROR: DB not found: {db_path}", file=sys.stderr)
+    # Resolve DB list:
+    # - from repeated --db args, else
+    # - from FAUCET_DB plus optional EXTRA_DBS (comma-separated) in backup.env
+    dbs: list[str] = []
+    if args.db:
+        dbs = [str(x) for x in args.db if str(x).strip()]
+    else:
+        main_db = (os.environ.get("FAUCET_DB") or "").strip()
+        if main_db:
+            dbs.append(main_db)
+        extra = (os.environ.get("EXTRA_DBS") or "").strip()
+        if extra:
+            # comma-separated paths
+            for part in extra.split(","):
+                p = part.strip()
+                if p:
+                    dbs.append(p)
+
+    if not dbs:
+        if not env_loaded:
+            print("ERROR: no DBs configured (expected --db or FAUCET_DB in ./backup.env)", file=sys.stderr)
+        else:
+            print("ERROR: no DBs configured (set FAUCET_DB and optionally EXTRA_DBS in backup.env)", file=sys.stderr)
         return 2
+
+    repo_dir = Path(os.path.expanduser(args.repo)).resolve()
+
+    db_paths: list[Path] = []
+    for d in dbs:
+        dp = Path(os.path.expanduser(d)).resolve()
+        if not dp.exists():
+            print(f"ERROR: DB not found: {dp}", file=sys.stderr)
+            return 2
+        db_paths.append(dp)
+
     if not (repo_dir / ".git").exists():
         print(f"ERROR: repo dir is not a git repo: {repo_dir}", file=sys.stderr)
         return 2
@@ -266,57 +300,71 @@ def main() -> int:
     out_dir = repo_dir / "snapshots"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    snap_db = out_dir / f"faucet_snapshot_{stamp}.db"
-    snap_gz = out_dir / f"{snap_db.name}.gz"
-    snap_gpg = out_dir / f"{snap_gz.name}.gpg"
+    items: list[dict] = []
 
-    # 1) Check source DB integrity
-    checks = run_sqlite_checks(db_path)
-    if not checks["quick_check_ok"] or not checks["integrity_check_ok"]:
-        print("ERROR: DB integrity checks failed. Will not back up.", file=sys.stderr)
-        print(json.dumps(checks, indent=2), file=sys.stderr)
-        return 3
+    for db_path in db_paths:
+        # Use a stable short name for the file prefix
+        prefix = db_path.stem
+        snap_db = out_dir / f"{prefix}_snapshot_{stamp}.db"
+        snap_gz = out_dir / f"{snap_db.name}.gz"
+        snap_gpg = out_dir / f"{snap_gz.name}.gpg"
 
-    # 2) Create consistent snapshot
-    make_consistent_snapshot(db_path, snap_db)
+        # 1) Check source DB integrity
+        checks = run_sqlite_checks(db_path)
+        if not checks["quick_check_ok"] or not checks["integrity_check_ok"]:
+            print(f"ERROR: DB integrity checks failed for {db_path}. Will not back up.", file=sys.stderr)
+            print(json.dumps(checks, indent=2), file=sys.stderr)
+            return 3
 
-    # 3) Optional: check snapshot too (paranoid mode)
-    snap_checks = run_sqlite_checks(snap_db)
-    if not snap_checks["quick_check_ok"] or not snap_checks["integrity_check_ok"]:
-        print("ERROR: SNAPSHOT integrity checks failed. Will not back up.", file=sys.stderr)
-        print(json.dumps(snap_checks, indent=2), file=sys.stderr)
-        try:
-            snap_db.unlink()
-        except Exception:
-            pass
-        return 3
+        # 2) Create consistent snapshot
+        make_consistent_snapshot(db_path, snap_db)
 
-    # 4) Compress
-    gzip_compress(snap_db, snap_gz)
+        # 3) Optional: check snapshot too (paranoid mode)
+        snap_checks = run_sqlite_checks(snap_db)
+        if not snap_checks["quick_check_ok"] or not snap_checks["integrity_check_ok"]:
+            print(f"ERROR: SNAPSHOT integrity checks failed for {db_path}. Will not back up.", file=sys.stderr)
+            print(json.dumps(snap_checks, indent=2), file=sys.stderr)
+            try:
+                snap_db.unlink()
+            except Exception:
+                pass
+            return 3
 
-    # 5) Encrypt
-    gpg_encrypt_sym(snap_gz, snap_gpg, passphrase)
+        # 4) Compress
+        gzip_compress(snap_db, snap_gz)
 
-    # cleanup plaintext artifacts (including possible WAL/SHM sidecars)
-    cleanup_snapshot_artifacts(snap_db, snap_gz)
+        # 5) Encrypt
+        gpg_encrypt_sym(snap_gz, snap_gpg, passphrase)
 
-    # 6) Write manifest
+        # cleanup plaintext artifacts (including possible WAL/SHM sidecars)
+        cleanup_snapshot_artifacts(snap_db, snap_gz)
+
+        items.append(
+            {
+                "db_path": str(db_path),
+                "db_name": prefix,
+                "snapshot_file": snap_gpg.name,
+                "snapshot_size_bytes": snap_gpg.stat().st_size,
+                "snapshot_sha256": sha256_file(snap_gpg),
+                "source_checks": checks,
+                "snapshot_checks": snap_checks,
+            }
+        )
+
+    # 6) Write manifest (multi-db)
     manifest = {
         "created_at_unix": ts,
         "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)),
-        "source_db_path": str(db_path),
-        "snapshot_file": snap_gpg.name,
-        "snapshot_size_bytes": snap_gpg.stat().st_size,
-        "snapshot_sha256": sha256_file(snap_gpg),
-        "source_checks": checks,
-        "snapshot_checks": snap_checks,
-        "note": "Encrypted snapshot: gzip + gpg symmetric AES256",
+        "items": items,
+        "note": "Encrypted snapshot(s): gzip + gpg symmetric AES256",
     }
     (repo_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (repo_dir / "LATEST").write_text(snap_gpg.name + "\n", encoding="utf-8")
+
+    # LATEST points to the newest snapshot of the *primary* DB (first in list)
+    (repo_dir / "LATEST").write_text(items[0]["snapshot_file"] + "\n", encoding="utf-8")
 
     # 7) Prune old snapshots (keep newest N)
-    snaps = sorted(out_dir.glob("faucet_snapshot_*.db.gz.gpg"), key=lambda p: p.name)
+    snaps = sorted(out_dir.glob("*_snapshot_*.db.gz.gpg"), key=lambda p: p.name)
     if len(snaps) > int(args.keep_snapshots):
         for p in snaps[: len(snaps) - int(args.keep_snapshots)]:
             try:
@@ -340,7 +388,7 @@ def main() -> int:
         print("No changes to commit.")
         return 0
 
-    msg = f"backup: {snap_gpg.name}"
+    msg = f"backup: {stamp} ({len(items)} dbs)"
     rc, out = git(["commit", "-m", msg], repo_dir)
     print(out)
     if rc != 0:
@@ -353,7 +401,7 @@ def main() -> int:
         print("ERROR: git push failed", file=sys.stderr)
         return 4
 
-    print("Backup OK:", snap_gpg.name)
+    print("Backup OK:", items[0]["snapshot_file"])
     return 0
 
 
