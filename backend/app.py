@@ -279,18 +279,38 @@ def is_valid_address(currency: str, addr: str) -> bool:
     """
     Generic address validation using coin config.
 
-    If no config is present for the currency, this function returns True
-    (no validation). If an RPC config exists, it will call the method
-    specified by 'address_validate_method' (default: 'verifyaddress') and:
-    - if the result is a dict with 'isvalid', return that flag
-    - if the result is a boolean, return it
-    - otherwise, treat as invalid.
+    Behaviour:
+    - If no config is present for the currency, this function returns True (no validation).
+    - If type == "evm_erc20", perform a local hex address check (0x-prefixed or 40-hex string).
+      No RPC call is done for this path.
+    - Otherwise, if an RPC config exists, call the method specified by 'address_validate_method'
+      (default: 'verifyaddress') and:
+        * if the result is a dict with 'isvalid', return that flag
+        * if the result is a boolean, return it
+        * otherwise, treat as invalid.
     """
     cfg = COINS_CONFIG.get(currency)
     if not cfg:
         # No validation configured for this currency.
         return True
 
+    coin_type = cfg.get("type", "utxo")
+
+    # --- EVM ERC-20 path: local hex address syntax check ---
+    if coin_type == "evm_erc20":
+        a = (addr or "").strip()
+        # Accept both 0x-prefixed and plain 40-hex addresses
+        if a.startswith(("0x", "0X")):
+            a = a[2:]
+        if len(a) != 40:
+            return False
+        try:
+            int(a, 16)
+            return True
+        except Exception:
+            return False
+
+    # --- UTXO / RPC-validated path (unchanged Logik) ---
     method = cfg.get("address_validate_method", "verifyaddress")
     try:
         res = call_coin_rpc(currency, method, [addr])
@@ -684,6 +704,24 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_events_account_id_id ON events(account_id, id);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dex_orders_open ON dex_orders(status, currency, side, price_sat_per_credit);")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dex_trades_state ON dex_trades(state, currency);")
+
+    # --- New: EVM payouts table ---
+    con.execute("""
+       CREATE TABLE IF NOT EXISTS evm_payouts (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         created_at INTEGER NOT NULL,
+         account_id TEXT NOT NULL,
+         currency TEXT NOT NULL,
+         to_address TEXT NOT NULL,
+         hcc_locked INTEGER NOT NULL,
+         redeem_request_id INTEGER NOT NULL,
+         status TEXT NOT NULL,             -- 'pending', 'sent', 'failed'
+         token_amount_wei TEXT,            -- optional: set by EVM worker
+         tx_hash TEXT,
+         error TEXT
+       );
+       """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_evm_payouts_status ON evm_payouts(status, id);")
 
     con.close()
 
@@ -1786,11 +1824,15 @@ def redeem_log(req: Request, limit: int = 10, all: bool = False):
 
     Privacy default: only return entries for the authenticated account.
     If REDEEM_LOG_PUBLIC=1 and all=true, return entries across all accounts.
+
+    Supports both legacy UTXO entries written by app.py and ERC-20 entries written
+    by the EVM worker.
     """
     account_id = None
     scope_all = bool(all) and REDEEM_LOG_PUBLIC
     if not scope_all:
         account_id = auth_account(req)
+
     limit = int(limit) if isinstance(limit, int) else 10
     if limit < 1:
         limit = 1
@@ -1813,43 +1855,85 @@ def redeem_log(req: Request, limit: int = 10, all: bool = False):
             continue
         if not isinstance(obj, dict):
             continue
+
+        # Optional per-account filter (default behaviour)
         if not scope_all and obj.get("account_id") != account_id:
             continue
+
         parsed.append(obj)
 
     # Sort ascending so we can take the last `limit` entries.
-    parsed.sort(key=lambda x: (int(x.get("created_at", 0) or 0), int(x.get("id", 0) or 0)))
+    # We support both `created_at` (legacy) and `ts` fields; fall back to 0.
+    def _sort_key(x: dict) -> tuple[int, int]:
+        try:
+            t = int(x.get("created_at") or x.get("ts") or 0)
+        except Exception:
+            t = 0
+        try:
+            rid = int(x.get("id") or x.get("request_id") or 0)
+        except Exception:
+            rid = 0
+        return (t, rid)
+
+    parsed.sort(key=_sort_key)
     parsed = parsed[-limit:]
 
     con = db()
     try:
         out: list[RedeemLogEntryOut] = []
         for e in parsed:
+            # Resolve redeem request id
             try:
-                rid = int(e.get("id", 0) or 0)
+                rid = int(e.get("id") or e.get("request_id") or 0)
             except Exception:
                 rid = 0
+
+            # Resolve timestamp: prefer created_at, then ts
             try:
-                ts = int(e.get("created_at", 0) or 0)
+                ts = int(e.get("created_at") or e.get("ts") or 0)
             except Exception:
                 ts = 0
+
             cur = str(e.get("currency", "") or "")
             acc = str(e.get("account_id", "") or "")
+
+            # txid (string or None)
             txid = e.get("txid")
             if txid is not None:
                 txid = str(txid)
+
+            # rpc_error as short string, if present
             rpc_error = e.get("rpc_error")
             if rpc_error is not None:
                 rpc_error = str(rpc_error)
-            tip_amount = e.get("tip_amount")
-            try:
-                tip_amount_f = float(tip_amount) if tip_amount is not None else None
-            except Exception:
-                tip_amount_f = None
+
+            # tip_amount:
+            #  - legacy UTXO + legacy worker: `tip_amount` already in coin/token units
+            #  - EVM worker might provide `tip_amount` (preferred) or only `token_amount_wei`
+            tip_amount_f: TypingOptional[float] = None
+            tip_amount_raw = e.get("tip_amount", None)
+
+            if tip_amount_raw is not None:
+                # best-effort float conversion
+                try:
+                    tip_amount_f = float(tip_amount_raw)
+                except Exception:
+                    tip_amount_f = None
+            else:
+                # Fallback for ERC-20 worker entries providing only wei
+                token_amount_wei = e.get("token_amount_wei")
+                if token_amount_wei is not None:
+                    try:
+                        decimals = int(COINS_CONFIG.get(cur, {}).get("decimals") or 18)
+                        # token_amount_wei can be string or int
+                        wei_int = int(str(token_amount_wei), 10)
+                        tip_amount_f = float(wei_int) / float(10 ** decimals)
+                    except Exception:
+                        tip_amount_f = None
 
             # Look up the current state/note from the redeem_requests table (best-effort).
-            state = None
-            note = None
+            state: TypingOptional[str] = None
+            note: TypingOptional[str] = None
             if rid > 0:
                 try:
                     row = con.execute(
@@ -1901,6 +1985,8 @@ def redeem_request(data: RedeemRequestIn, req: Request):
     account_id = auth_account(req)
     tip_address = data.tip_address.strip()
     currency = (data.currency or "UNKNOWN").strip().upper() or "UNKNOWN"
+    cfg = COINS_CONFIG.get(currency, {})
+    coin_type = cfg.get("type", "utxo")
 
     if not tip_address:
         raise HTTPException(status_code=400, detail="missing tip address")
@@ -1910,14 +1996,6 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         raise HTTPException(status_code=400, detail=f"invalid address for currency {currency}")
 
     con = db()
-    request_id: int | None = None
-    credits_before: int = 0
-    cost: int = 0
-    tip_amount: float = 0.0
-    txid: str | None = None
-    rpc_error: str | None = None
-    final_state: str = "locked"
-    note: str | None = None
 
     try:
         ts = now_unix()
@@ -1979,6 +2057,107 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         # Commit Phase 1: credits are now locked and the request is recorded.
         con.execute("COMMIT;")
 
+        # --- End of Phase 1 ---
+
+        # For EVM ERC-20 coins, enqueue a payout job and keep credits locked.
+        if coin_type == "evm_erc20":
+            # 1) Determine token amount (randomly between min_tip and max_tip tokens)
+            decimals = int(cfg.get("decimals") or 18)
+
+            try:
+                min_tokens = float(cfg.get("min_tip", 0) or 0)
+            except (TypeError, ValueError):
+                min_tokens = 0.0
+            try:
+                max_tokens = float(cfg.get("max_tip", 0) or 0)
+            except (TypeError, ValueError):
+                max_tokens = 0.0
+
+            if max_tokens <= 0:
+                # Redeem for this currency is not (yet) configured correctly.
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"redeem disabled or misconfigured for {currency} (max_tip <= 0)",
+                )
+
+            if min_tokens < 0:
+                min_tokens = 0.0
+            if min_tokens > max_tokens:
+                min_tokens = max_tokens
+
+            rng = secrets.SystemRandom()
+            tokens = rng.uniform(min_tokens, max_tokens)
+            tokens = float(f"{tokens:.8f}")
+
+            # 2) Convert to wei
+            token_amount_wei = int(tokens * (10 ** decimals))
+
+            if token_amount_wei <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="computed token_amount_wei <= 0 for ERC-20 payout",
+                )
+
+            # 3) Create EVM payout job; credits remain locked.
+            con.execute(
+                """
+                INSERT INTO evm_payouts(
+                  created_at, account_id, currency,
+                  to_address, hcc_locked, redeem_request_id,
+                  token_amount_wei, status
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    ts,
+                    account_id,
+                    currency,
+                    tip_address,
+                    cost,
+                    request_id,
+                    str(token_amount_wei),
+                    "pending",
+                ),
+            )
+
+            # Event for explorer
+            log_event(
+                con,
+                ts=now_unix(),
+                type="redeem_queue_evm",
+                account_id=account_id,
+                amount=0,
+                other=currency,
+                meta={
+                    "request_id": int(request_id),
+                    "to": tip_address,
+                    "locked": int(cost),
+                    "token_amount_wei": token_amount_wei,
+                    "tokens": tokens,
+                },
+            )
+
+            # Credits remain locked; worker burns them upon success.
+            row_final = con.execute(
+                "SELECT credits FROM accounts WHERE account_id=?",
+                (account_id,),
+            ).fetchone()
+            credits_left = int(row_final[0] or 0) if row_final else 0
+
+            return RedeemRequestOut(
+                ok=True,
+                message=(
+                    "Redeem request recorded and queued for an ERC-20 token payout. "
+                    "Payouts are discretionary and may be processed with delay."
+                ),
+                credits_left=credits_left,
+                min_credits=MIN_REDEEM_CREDITS,
+                currency=currency,
+                tip_amount=None,
+                txid=None,
+                rpc_error=None,
+            )
+
+        # ---- otherwise: normal UTXO path  ----
         # Phase 2: attempt to send on-chain tip (best-effort, outside the credit-locking txn).
         tip_amount, txid, rpc_error, safe_to_unlock = maybe_send_tip(currency, tip_address)
 
