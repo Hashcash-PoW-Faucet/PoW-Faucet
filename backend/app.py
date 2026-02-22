@@ -296,8 +296,8 @@ def is_valid_address(currency: str, addr: str) -> bool:
 
     coin_type = cfg.get("type", "utxo")
 
-    # --- EVM ERC-20 path: local hex address syntax check ---
-    if coin_type == "evm_erc20":
+    # --- EVM ERC-20 / native path: local hex address syntax check ---
+    if coin_type in ("evm_erc20", "evm_native"):
         a = (addr or "").strip()
         # Accept both 0x-prefixed and plain 40-hex addresses
         if a.startswith(("0x", "0X")):
@@ -1975,12 +1975,12 @@ def redeem_request(data: RedeemRequestIn, req: Request):
 
     New behavior:
     - First move the redeem cost from `credits` -> `locked_credits` atomically.
-    - Only if an on-chain tip is successfully sent, the locked credits are permanently burned.
-    - If no tip is sent (RPC error, empty faucet wallet, etc.), the locked credits are returned
-      to the user's available balance.
+    - For EVM currencies (evm_erc20, evm_native), enqueue a payout job and keep credits locked.
+      The corresponding worker will burn the locked credits upon successful on-chain payout.
+    - For UTXO currencies, attempt an immediate best-effort on-chain tip and burn/unlock credits
+      depending on the outcome.
 
-    This still does NOT guarantee any payout or fixed exchange rate, but avoids the case where
-    credits are permanently deducted without any chance of a payout.
+    This still does NOT guarantee any payout or fixed exchange rate.
     """
     account_id = auth_account(req)
     tip_address = data.tip_address.strip()
@@ -2050,55 +2050,67 @@ def redeem_request(data: RedeemRequestIn, req: Request):
             type="redeem_lock",
             account_id=account_id,
             amount=0,
-            other=currency,  # oder "lock"
-            meta={"request_id": int(request_id), "tip_address": tip_address, "locked": int(cost)},
+            other=currency,
+            meta={
+                "request_id": int(request_id),
+                "tip_address": tip_address,
+                "locked": int(cost),
+            },
         )
 
         # Commit Phase 1: credits are now locked and the request is recorded.
         con.execute("COMMIT;")
 
-        # --- End of Phase 1 ---
+        # -----------------------------
+        # EVM path: ERC-20 + native gas
+        # -----------------------------
+        if coin_type in ("evm_erc20", "evm_native"):
+            # For ERC-20 tokens, we precompute a token amount (random between min_tip/max_tip).
+            # For native tokens (e.g. DEGEN), we let the worker decide the amount based on
+            # hcc_locked and its own policy; token_amount_wei stays NULL here.
+            token_amount_wei: Optional[int] = None
+            tokens: Optional[float] = None
 
-        # For EVM ERC-20 coins, enqueue a payout job and keep credits locked.
-        if coin_type == "evm_erc20":
-            # 1) Determine token amount (randomly between min_tip and max_tip tokens)
-            decimals = int(cfg.get("decimals") or 18)
+            if coin_type == "evm_erc20":
+                # decimals from config (fallback 18)
+                try:
+                    decimals = int(cfg.get("decimals") or 18)
+                except Exception:
+                    decimals = 18
 
-            try:
-                min_tokens = float(cfg.get("min_tip", 0) or 0)
-            except (TypeError, ValueError):
-                min_tokens = 0.0
-            try:
-                max_tokens = float(cfg.get("max_tip", 0) or 0)
-            except (TypeError, ValueError):
-                max_tokens = 0.0
+                try:
+                    min_tokens = float(cfg.get("min_tip", 0) or 0)
+                except (TypeError, ValueError):
+                    min_tokens = 0.0
+                try:
+                    max_tokens = float(cfg.get("max_tip", 0) or 0)
+                except (TypeError, ValueError):
+                    max_tokens = 0.0
 
-            if max_tokens <= 0:
-                # Redeem for this currency is not (yet) configured correctly.
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"redeem disabled or misconfigured for {currency} (max_tip <= 0)",
-                )
+                if max_tokens <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"redeem disabled or misconfigured for {currency} (max_tip <= 0)",
+                    )
 
-            if min_tokens < 0:
-                min_tokens = 0.0
-            if min_tokens > max_tokens:
-                min_tokens = max_tokens
+                if min_tokens < 0:
+                    min_tokens = 0.0
+                if min_tokens > max_tokens:
+                    min_tokens = max_tokens
 
-            rng = secrets.SystemRandom()
-            tokens = rng.uniform(min_tokens, max_tokens)
-            tokens = float(f"{tokens:.8f}")
+                rng = secrets.SystemRandom()
+                tokens = rng.uniform(min_tokens, max_tokens)
+                tokens = float(f"{tokens:.8f}")
 
-            # 2) Convert to wei
-            token_amount_wei = int(tokens * (10 ** decimals))
+                token_amount_wei = int(tokens * (10 ** decimals))
+                if token_amount_wei <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="computed token_amount_wei <= 0 for ERC-20 payout",
+                    )
 
-            if token_amount_wei <= 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="computed token_amount_wei <= 0 for ERC-20 payout",
-                )
-
-            # 3) Create EVM payout job; credits remain locked.
+            # Insert generic EVM payout job; credits remain locked.
+            # For evm_native, token_amount_wei can be NULL; the worker will compute it.
             con.execute(
                 """
                 INSERT INTO evm_payouts(
@@ -2114,12 +2126,23 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                     tip_address,
                     cost,
                     request_id,
-                    str(token_amount_wei),
+                    (str(token_amount_wei) if token_amount_wei is not None else None),
                     "pending",
                 ),
             )
 
             # Event for explorer
+            meta: Dict[str, Any] = {
+                "request_id": int(request_id),
+                "to": tip_address,
+                "locked": int(cost),
+                "coin_type": coin_type,
+            }
+            if token_amount_wei is not None:
+                meta["token_amount_wei"] = token_amount_wei
+            if tokens is not None:
+                meta["tokens"] = tokens
+
             log_event(
                 con,
                 ts=now_unix(),
@@ -2127,28 +2150,24 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                 account_id=account_id,
                 amount=0,
                 other=currency,
-                meta={
-                    "request_id": int(request_id),
-                    "to": tip_address,
-                    "locked": int(cost),
-                    "token_amount_wei": token_amount_wei,
-                    "tokens": tokens,
-                },
+                meta=meta,
             )
 
-            # Credits remain locked; worker burns them upon success.
+            # Credits remain locked; EVM worker burns them upon success.
             row_final = con.execute(
                 "SELECT credits FROM accounts WHERE account_id=?",
                 (account_id,),
             ).fetchone()
             credits_left = int(row_final[0] or 0) if row_final else 0
 
+            message = (
+                "Redeem request recorded and queued for an on-chain EVM payout. "
+                "Payouts are discretionary and may be processed with delay."
+            )
+
             return RedeemRequestOut(
                 ok=True,
-                message=(
-                    "Redeem request recorded and queued for an ERC-20 token payout. "
-                    "Payouts are discretionary and may be processed with delay."
-                ),
+                message=message,
                 credits_left=credits_left,
                 min_credits=MIN_REDEEM_CREDITS,
                 currency=currency,
@@ -2157,7 +2176,9 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                 rpc_error=None,
             )
 
-        # ---- otherwise: normal UTXO path  ----
+        # -----------------------------
+        # UTXO path (legacy coins)
+        # -----------------------------
         # Phase 2: attempt to send on-chain tip (best-effort, outside the credit-locking txn).
         tip_amount, txid, rpc_error, safe_to_unlock = maybe_send_tip(currency, tip_address)
 
@@ -2245,7 +2266,11 @@ def redeem_request(data: RedeemRequestIn, req: Request):
                     account_id=account_id,
                     amount=0,
                     other=currency,
-                    meta={"request_id": int(request_id), "safe_to_unlock": bool(safe_to_unlock), "rpc_error": (rpc_error or "")},
+                    meta={
+                        "request_id": int(request_id),
+                        "safe_to_unlock": bool(safe_to_unlock),
+                        "rpc_error": (rpc_error or ""),
+                    },
                 )
                 con.execute("COMMIT;")
             except Exception:
@@ -2261,7 +2286,7 @@ def redeem_request(data: RedeemRequestIn, req: Request):
         ).fetchone()
         credits_left = int(row_final[0] or 0) if row_final else 0
 
-        # Log this redeem request and outcome to the JSONL queue/audit file.
+        # Log this redeem request and outcome to the JSONL queue/audit file (legacy UTXO).
         enqueue_redeem_request(
             request_id=request_id,
             ts=ts,
