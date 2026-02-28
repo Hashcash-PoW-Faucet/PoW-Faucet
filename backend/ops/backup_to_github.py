@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 def _strip_env_quotes(v: str) -> str:
@@ -169,6 +169,51 @@ def gpg_encrypt_sym(src: Path, dst: Path, passphrase: str) -> None:
 def git(cmd: list[str], repo_dir: Path) -> Tuple[int, str]:
     p = subprocess.run(["git", "-C", str(repo_dir), *cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     return p.returncode, p.stdout
+
+
+def prune_snapshots_per_db(out_dir: Path, keep_snapshots: int) -> None:
+    """Prune encrypted snapshots per DB prefix, keeping the newest N per DB."""
+    groups: Dict[str, List[Path]] = {}
+
+    for p in out_dir.glob("*_snapshot_*.db.gz.gpg"):
+        name = p.name
+        if "_snapshot_" not in name:
+            continue
+        prefix = name.split("_snapshot_", 1)[0]
+        groups.setdefault(prefix, []).append(p)
+
+    for prefix, files in groups.items():
+        # Timestamp format is YYYYMMDD-HHMMSS, so lexicographic sort is chronological.
+        files = sorted(files, key=lambda p: p.name.split("_snapshot_", 1)[1])
+        if len(files) > keep_snapshots:
+            for p in files[: len(files) - keep_snapshots]:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+
+def build_manifest_items(items: List[dict], out_dir: Path) -> List[dict]:
+    """Return manifest items only for snapshot files that still exist after pruning."""
+    kept: List[dict] = []
+    for item in items:
+        snap_path = out_dir / item["snapshot_file"]
+        if snap_path.exists():
+            kept.append(item)
+    return kept
+
+
+def validate_manifest_files(manifest_items: List[dict], out_dir: Path) -> None:
+    """Fail if any manifest-referenced snapshot file does not exist."""
+    missing: List[str] = []
+    for item in manifest_items:
+        snap_path = out_dir / item["snapshot_file"]
+        if not snap_path.exists():
+            missing.append(str(snap_path))
+    if missing:
+        raise RuntimeError(
+            "Manifest references missing snapshot file(s): " + ", ".join(missing)
+        )
 
 
 def main() -> int:
@@ -351,26 +396,32 @@ def main() -> int:
             }
         )
 
-    # 6) Write manifest (multi-db)
+    # 6) Prune old snapshots per DB (keep newest N per DB)
+    prune_snapshots_per_db(out_dir, int(args.keep_snapshots))
+
+    # 7) Write manifest (multi-db) after pruning
+    kept_items = build_manifest_items(items, out_dir)
+    if not kept_items:
+        print("ERROR: no snapshot files remain after pruning", file=sys.stderr)
+        return 4
+
+    validate_manifest_files(kept_items, out_dir)
+
     manifest = {
         "created_at_unix": ts,
         "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)),
-        "items": items,
+        "items": kept_items,
         "note": "Encrypted snapshot(s): gzip + gpg symmetric AES256",
     }
     (repo_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    # LATEST points to the newest snapshot of the *primary* DB (first in list)
-    (repo_dir / "LATEST").write_text(items[0]["snapshot_file"] + "\n", encoding="utf-8")
-
-    # 7) Prune old snapshots (keep newest N)
-    snaps = sorted(out_dir.glob("*_snapshot_*.db.gz.gpg"), key=lambda p: p.name)
-    if len(snaps) > int(args.keep_snapshots):
-        for p in snaps[: len(snaps) - int(args.keep_snapshots)]:
-            try:
-                p.unlink()
-            except Exception:
-                pass
+    # LATEST points to the newest snapshot of the *primary* DB (first kept item)
+    latest_file = kept_items[0]["snapshot_file"]
+    latest_path = out_dir / latest_file
+    if not latest_path.exists():
+        print(f"ERROR: LATEST target does not exist: {latest_path}", file=sys.stderr)
+        return 4
+    (repo_dir / "LATEST").write_text(latest_file + "\n", encoding="utf-8")
 
     # 8) Git commit + push
 
@@ -401,7 +452,7 @@ def main() -> int:
         print("ERROR: git push failed", file=sys.stderr)
         return 4
 
-    print("Backup OK:", items[0]["snapshot_file"])
+    print("Backup OK:", latest_file)
     return 0
 
 
