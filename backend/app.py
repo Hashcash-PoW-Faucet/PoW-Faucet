@@ -310,7 +310,7 @@ def is_valid_address(currency: str, addr: str) -> bool:
         except Exception:
             return False
 
-    # --- UTXO / RPC-validated path (unchanged Logik) ---
+    # --- UTXO / RPC-validated path ---
     method = cfg.get("address_validate_method", "verifyaddress")
     try:
         res = call_coin_rpc(currency, method, [addr])
@@ -481,6 +481,27 @@ def consteq(a: str, b: str) -> bool:
 
 def now_unix() -> int:
     return int(time.time())
+
+
+def _utc_next_midnight(ts: int) -> int:
+    """Return the unix timestamp of the next UTC midnight after `ts`."""
+    ts = int(ts)
+    return ((ts // 86400) + 1) * 86400
+
+
+def _format_hhmmss(seconds: int) -> str:
+    """Format a duration in seconds as HH:MM:SS."""
+    s = max(0, int(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
+def _daily_cap_retry_info(ts: int) -> tuple[int, str, int]:
+    """Return (reset_at_ts, wait_hhmmss, retry_after_seconds) for UTC daily cap resets."""
+    reset_at = _utc_next_midnight(int(ts))
+    retry_after = max(0, int(reset_at - int(ts)))
+    return reset_at, _format_hhmmss(retry_after), retry_after
 
 
 def _is_hex_40(s: str) -> bool:
@@ -799,8 +820,12 @@ def accept_pow_and_credit(
                 con.execute("ROLLBACK;")
                 raise HTTPException(status_code=429, detail="cooldown")
             if earned_today >= DAILY_EARN_CAP:
-                con.execute("ROLLBACK;")
-                raise HTTPException(status_code=429, detail="daily cap reached")
+                _, wait_hms, retry_after = _daily_cap_retry_info(ts)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"daily cap reached (retry in {wait_hms})",
+                    headers={"Retry-After": str(max(1, retry_after))},
+                )
             new_cooldown = ts + COOLDOWN_SEC
 
         elif mode == "potato":
@@ -811,15 +836,24 @@ def accept_pow_and_credit(
                 con.execute("ROLLBACK;")
                 raise HTTPException(status_code=429, detail="cooldown")
             if earned_today >= DAILY_EARN_CAP:
-                con.execute("ROLLBACK;")
-                raise HTTPException(status_code=429, detail="daily cap reached")
+                _, wait_hms, retry_after = _daily_cap_retry_info(ts)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"daily cap reached (retry in {wait_hms})",
+                    headers={"Retry-After": str(max(1, retry_after))},
+                )
             new_cooldown = ts + POTATO_COOLDOWN_SEC
 
         elif mode == "extreme":
             # No cooldown in extreme mode, but global higher daily cap
             if earned_today >= EXTREME_DAILY_CAP:
+                _, wait_hms, retry_after = _daily_cap_retry_info(ts)
                 con.execute("ROLLBACK;")
-                raise HTTPException(status_code=429, detail="extreme daily cap reached")
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"extreme daily cap reached (retry in {wait_hms})",
+                    headers={"Retry-After": str(max(1, retry_after))},
+                )
             # Do not touch cooldown; keep whatever was set by normal mining
             new_cooldown = cooldown_until
 
@@ -1121,7 +1155,12 @@ def challenge(data: ChallengeIn, req: Request):
         if cooldown_until > ts:
             raise HTTPException(status_code=429, detail="cooldown")
         if earned_today >= DAILY_EARN_CAP:
-            raise HTTPException(status_code=429, detail="daily cap reached")
+            _, wait_hms, retry_after = _daily_cap_retry_info(ts)
+            raise HTTPException(
+                status_code=429,
+                detail=f"daily cap reached (retry in {wait_hms})",
+                headers={"Retry-After": str(max(1, retry_after))},
+            )
 
         # IP lock: deny parallel mining from same IP tag
         if not IP_LOCKS.try_acquire(ipt, account_id, STAMP_TTL_SEC):
@@ -1156,7 +1195,12 @@ def challenge_extreme(req: Request):
 
         # EXTREME mode: no cooldown; only a higher daily cap
         if earned_today >= EXTREME_DAILY_CAP:
-            raise HTTPException(status_code=429, detail="extreme daily cap reached")
+            _, wait_hms, retry_after = _daily_cap_retry_info(ts)
+            raise HTTPException(
+                status_code=429,
+                detail=f"extreme daily cap reached (retry in {wait_hms})",
+                headers={"Retry-After": str(max(1, retry_after))},
+            )
 
         # IP lock: deny parallel mining from same IP tag (normal + extreme teilen sich das Lock)
         if not IP_LOCKS.try_acquire(ipt, account_id, STAMP_TTL_SEC):
@@ -1209,7 +1253,12 @@ def challenge_potato(req: Request):
         if cooldown_until > ts:
             raise HTTPException(status_code=429, detail="cooldown")
         if earned_today >= DAILY_EARN_CAP:
-            raise HTTPException(status_code=429, detail="daily cap reached")
+            _, wait_hms, retry_after = _daily_cap_retry_info(ts)
+            raise HTTPException(
+                status_code=429,
+                detail=f"daily cap reached (retry in {wait_hms})",
+                headers={"Retry-After": str(max(1, retry_after))},
+            )
 
         # IP lock: deny parallel mining from same IP tag
         if not IP_LOCKS.try_acquire(ipt, account_id, STAMP_TTL_SEC):
